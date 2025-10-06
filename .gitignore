@@ -1,0 +1,161 @@
+# ============================================
+# 🌈 CodeBiSync Full .gitignore
+# For Flutter Desktop + Dart + VSCode + macOS/Windows/Linux
+# ============================================
+
+# --------------------------------------------
+# 🧩 Miscellaneous
+# --------------------------------------------
+*.class
+*.log
+*.pyc
+*.swp
+*.swo
+*.tmp
+*.bak
+*.old
+*.orig
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+Icon?
+ehthumbs.db
+Thumbs.db
+
+# --------------------------------------------
+# 💡 IntelliJ / Android Studio
+# --------------------------------------------
+*.iml
+*.ipr
+*.iws
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --------------------------------------------
+# 💻 VSCode
+# --------------------------------------------
+.vscode/
+# If you want to commit VS Code launch configs, comment out the line above.
+
+# --------------------------------------------
+# 🐦 Flutter / Dart / Pub
+# --------------------------------------------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# --------------------------------------------
+# 🏗️ Build outputs
+# --------------------------------------------
+/build/
+/coverage/
+coverage/
+test_outputs/
+
+# Android
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/.gradle/
+android/app/build/
+
+# iOS
+/ios/Flutter/Flutter.framework/
+/ios/.symlinks/
+/ios/Pods/
+/ios/build/
+/ios/.generated/
+/ios/Flutter/App.framework
+/ios/Flutter/Flutter.podspec
+/ios/Flutter/Generated.xcconfig
+
+# macOS
+/macos/Flutter/ephemeral/
+/macos/build/
+/macos/Pods/
+/macos/Flutter/Flutter-Debug.xcconfig
+/macos/Flutter/Flutter-Release.xcconfig
+/macos/Flutter/Generated.xcconfig
+/macos/Runner.xcworkspace/
+/macos/Runner/GeneratedPluginRegistrant.swift
+
+# Windows
+/windows/runner/Debug/
+/windows/runner/Release/
+/windows/runner/x64/
+/windows/runner/x86/
+/windows/build/
+
+# Linux
+/linux/build/
+/linux/flutter/ephemeral/
+/linux/runner/Debug/
+/linux/runner/Release/
+
+# --------------------------------------------
+# 🔏 Symbolication / Obfuscation
+# --------------------------------------------
+app.*.symbols
+app.*.map.json
+
+# --------------------------------------------
+# 🧰 Local Tools & Config
+# --------------------------------------------
+.env
+.env.local
+.env.production
+.tmp/
+cache/
+dist/
+bin/
+internal/
+tmp/
+env/
+*.db
+
+# --------------------------------------------
+# 🧱 CodeBiSync Specific
+# --------------------------------------------
+# Add your backend Go or CLI code cache/build here
+/internal/
+/bin/
+/dist/
+/tmp/
+/cache/
+/env/
+/logs/
+/results/
+/models/
+/.venv/
+
+# --------------------------------------------
+# 🧪 Testing / Coverage
+# --------------------------------------------
+coverage/
+test_outputs/
+
+# --------------------------------------------
+# 🧾 OS Junk / System Files
+# --------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================
+# END OF FILE
+# ============================================
