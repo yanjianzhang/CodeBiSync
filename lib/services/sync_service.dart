@@ -12,6 +12,8 @@ import '../sync/impl/local_transport.dart';
 import '../sync/impl/file_state_store.dart';
 import '../sync/session.dart';
 import '../sync/sync_controller.dart';
+import '../services/rsync_service.dart';
+import '../services/ssh_config.dart';
 
 class SyncConfig {
   String? localPath;
@@ -153,6 +155,64 @@ class SyncService {
       return 'Session running (Alpha→Beta). 源: ${config.localPath}\n目标: ${config.remotePath}';
     }
     return 'No active session';
+  }
+
+  Future<List<SyncEntry>> listRemoteEntries() async {
+    final host = config.remoteHost;
+    final user = config.remoteUser;
+    final basePath = config.remotePath;
+    if (host == null || user == null || basePath == null || basePath.isEmpty) return [];
+
+    String? keyPath = config.identityFile;
+    String? proxyJump;
+    bool compression = true;
+    bool forwardAgent = true;
+    try {
+      final hosts = await loadAllSshConfigs();
+      final m = hosts.firstWhere(
+        (h) => h.host == host || h.hostName == host,
+        orElse: () => SshConfigHost(host: ''),
+      );
+      if (m.host.isNotEmpty) {
+        proxyJump = m.proxyJump;
+        compression = m.compression;
+        forwardAgent = m.forwardAgent;
+        if ((keyPath == null || keyPath.isEmpty) && m.identityFiles.isNotEmpty) {
+          keyPath = m.identityFiles.first;
+        }
+      }
+      if (keyPath == null || keyPath.isEmpty) {
+        keyPath = await resolvePrivateKeyPath(host: host, user: user);
+      }
+    } catch (_) {}
+
+    final results = <SyncEntry>[];
+    final dirs = <String>[basePath];
+    while (dirs.isNotEmpty) {
+      final current = dirs.removeLast();
+      try {
+        final items = await RsyncService.list(
+          host: host,
+          username: user,
+          path: current,
+          port: config.remotePort ?? 22,
+          identityFile: keyPath,
+          proxyJump: proxyJump,
+          compression: compression,
+          forwardAgent: forwardAgent,
+          immediateOnly: true,
+          dirsOnly: false,
+        );
+        for (final e in items) {
+          final rel = current == basePath ? e.name : p.join(p.relative(current, from: basePath), e.name);
+          results.add(SyncEntry(name: rel, isDirectory: e.isDirectory, status: SyncStatus.pending));
+          if (e.isDirectory) {
+            dirs.add(p.join(current, e.name));
+          }
+        }
+      } catch (_) {}
+    }
+    return results;
   }
 
   Future<String> diagnoseLocalSync() async {

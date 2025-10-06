@@ -68,6 +68,33 @@ class RsyncEndpoint implements Endpoint {
     }
   }
 
+  // Pull a single relative path from remote -> localRoot (used for beta→alpha)
+  Future<void> pull(String relPath) async {
+    final src = '$user@$host:${_quote(_remotePath(relPath))}';
+    final destDir = _join(localRoot, _dirname(relPath));
+    await Directory(destDir).create(recursive: true);
+
+    final sshArgs = [
+      'ssh',
+      '-p', port.toString(),
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'UserKnownHostsFile=/dev/null',
+      '-o', 'BatchMode=yes',
+      if (identityFile != null && identityFile!.isNotEmpty) ...['-i', identityFile!],
+    ];
+
+    final args = [
+      '-av',
+      '-e', sshArgs.join(' '),
+      src,
+      '$destDir/',
+    ];
+    final res = await Process.run('rsync', args);
+    if (res.exitCode != 0) {
+      throw ProcessException('rsync', args, res.stderr, res.exitCode);
+    }
+  }
+
   @override
   Future<List<int>> readChunk(String path, int offset, int length) async {
     throw UnimplementedError();

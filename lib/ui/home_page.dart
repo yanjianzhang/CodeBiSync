@@ -143,7 +143,7 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      final entries = await _syncService.listLocalEntries(remotePath);
+      final entries = await _syncService.listRemoteEntries();
       if (!mounted) return;
       setState(() {
         _remoteEntries = entries;
@@ -808,45 +808,45 @@ class _DirectoryListTile extends StatelessWidget {
     final modified = _formatDate(entry.modifiedAt);
     final synced = _formatDate(entry.lastSyncAt);
 
-    return DecoratedBox(
+    return Container(
       decoration: BoxDecoration(
         color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: colorScheme.outlineVariant.withOpacity(0.6)),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colorScheme.outlineVariant.withOpacity(0.5)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            Icon(iconData, color: colorScheme.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.name,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      _InfoChip(label: '修改', value: modified),
-                      _InfoChip(label: '同步', value: synced),
-                    ],
-                  ),
-                ],
-              ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Icon(iconData, size: 18, color: colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.name,
+              style: Theme.of(context).textTheme.bodyMedium,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            Icon(statusIcon, color: statusColor),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _glyph(entry.status),
+            style: const TextStyle(fontSize: 16),
+          ),
+        ],
       ),
     );
+  }
+
+  String _glyph(SyncStatus status) {
+    switch (status) {
+      case SyncStatus.synced:
+        return '✅';
+      case SyncStatus.failed:
+        return '❌';
+      case SyncStatus.pending:
+      default:
+        return '🕙';
+    }
   }
 
   static IconData _statusIcon(SyncStatus status) {

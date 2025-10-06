@@ -50,18 +50,48 @@ class Session {
       SyncPlan plan = differ.reconcile(base, alphaSnap, betaSnap);
 
       if (plan.hasChanges) {
-        // 准备 staging 数据
-        StagingData staging = stager.prepare(plan);
+        // Alpha → Beta
+        if (plan.alphaToBeta.isNotEmpty) {
+          final a2b = SyncPlan(
+            alphaToBeta: plan.alphaToBeta,
+            betaToAlpha: const [],
+            conflicts: const [],
+          );
+          final stagingA2B = stager.prepare(a2b);
+          await transport.send(stagingA2B);
+          await endpointBeta.apply(stagingA2B);
+        }
 
-        // 单向传输示例：从 Alpha → Beta（可以根据模式调整方向）
-        await transport.send(staging);
-        await endpointBeta.apply(staging);
+        // Beta → Alpha（仅当 Beta 是 RsyncEndpoint 时，拉取文件到本地）
+        if (plan.betaToAlpha.isNotEmpty) {
+          for (final ch in plan.betaToAlpha) {
+            switch (ch.type) {
+              case ChangeType.Create:
+              case ChangeType.Modify:
+                if (endpointBeta is dynamic && (endpointBeta as dynamic).pull != null) {
+                  try {
+                    await (endpointBeta as dynamic).pull(ch.path);
+                  } catch (_) {}
+                }
+                break;
+              case ChangeType.Delete:
+                await endpointAlpha.delete(ch.path);
+                break;
+              case ChangeType.Rename:
+                if (ch.oldPath != null) {
+                  await endpointAlpha.rename(ch.oldPath!, ch.path);
+                }
+                break;
+              case ChangeType.MetadataChange:
+                break;
+            }
+          }
+        }
 
-        // 如果你支持双向或 beta → alpha，也在这里做
-        // ...
+        // TODO: 可将 conflicts 上报给 UI 或记录日志
 
-        // 保存新基线
-        await stateStore.saveNewBaseline(alphaSnap, betaSnap, staging);
+        // 保存新基线（此处简单地用本轮扫描作为新基线）
+        await stateStore.saveNewBaseline(alphaSnap, betaSnap, StagingData(metadataChanges: [], dataChunks: []));
       }
     }
   }
