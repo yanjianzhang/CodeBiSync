@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>需要使用 Apple 事件以请求管理员权限修复 Mutagen 权限。</string>
 </dict>
 </plist>
