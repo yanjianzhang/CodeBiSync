@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 
 import '../models/sync_entry.dart';
 import '../services/sync_service.dart';
+import 'remote_browser.dart';
+import '../services/ssh_config.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -13,20 +15,52 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final SyncService _syncService = SyncService();
+  final ScrollController _pageScrollCtrl = ScrollController();
 
   final TextEditingController _localDirCtrl = TextEditingController();
   final TextEditingController _remoteDirCtrl = TextEditingController();
   final TextEditingController _remoteUserCtrl = TextEditingController();
   final TextEditingController _remoteHostCtrl = TextEditingController();
+  final TextEditingController _remotePortCtrl = TextEditingController(text: '22');
+  final TextEditingController _remotePassCtrl = TextEditingController();
+  final TextEditingController _remoteKeyCtrl = TextEditingController();
+  final TextEditingController _remoteKeyPassCtrl = TextEditingController();
   final TextEditingController _sshCmdCtrl = TextEditingController();
 
   String _status = 'Idle';
   bool _loadingLocal = false;
   bool _loadingRemote = false;
+  bool _stackedLayout = false; // true = 一上一下；false = 左右并排（宽屏）
   List<SyncEntry> _localEntries = const [];
   List<SyncEntry> _remoteEntries = const [];
   String? _localError;
   String? _remoteError;
+  
+  Future<void> _pickRemoteDir() async {
+    final host = _remoteHostCtrl.text.trim();
+    final user = _remoteUserCtrl.text.trim();
+    final pass = _remotePassCtrl.text;
+    final port = int.tryParse(_remotePortCtrl.text.trim()) ?? 22;
+    if (host.isEmpty || user.isEmpty) {
+      _showSnack('请先填写用户名与主机');
+      return;
+    }
+    final picked = await RemoteBrowserDialog.pick(
+      context: context,
+      host: host,
+      username: user,
+      password: pass,
+      port: port,
+      initialPath: _remoteDirCtrl.text.trim().isEmpty ? '/' : _remoteDirCtrl.text.trim(),
+      privateKeyPath: _remoteKeyCtrl.text.trim().isEmpty ? null : _remoteKeyCtrl.text.trim(),
+      privateKeyPassphrase: _remoteKeyPassCtrl.text,
+    );
+    if (picked != null && picked.isNotEmpty) {
+      _remoteDirCtrl.text = picked;
+      _syncService.updateConfig(remotePath: picked);
+      await _loadRemoteEntries();
+    }
+  }
 
   @override
   void dispose() {
@@ -34,6 +68,10 @@ class _HomePageState extends State<HomePage> {
     _remoteDirCtrl.dispose();
     _remoteUserCtrl.dispose();
     _remoteHostCtrl.dispose();
+    _remotePortCtrl.dispose();
+    _remotePassCtrl.dispose();
+    _remoteKeyCtrl.dispose();
+    _remoteKeyPassCtrl.dispose();
     _sshCmdCtrl.dispose();
     super.dispose();
   }
@@ -104,16 +142,11 @@ class _HomePageState extends State<HomePage> {
       _remoteError = null;
     });
 
-    // TODO: Integrate with mutagen session details to fetch real remote metadata.
     try {
-      final placeholder = _localEntries.isEmpty
-          ? const <SyncEntry>[]
-          : _localEntries
-              .map((entry) => entry.copyWith(status: entry.status))
-              .toList(growable: false);
+      final entries = await _syncService.listLocalEntries(remotePath);
       if (!mounted) return;
       setState(() {
-        _remoteEntries = placeholder;
+        _remoteEntries = entries;
       });
     } catch (e) {
       if (!mounted) return;
@@ -126,6 +159,23 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _loadingRemote = false;
       });
+    }
+  }
+
+  Future<void> _resolvePrivateKey() async {
+    final host = _remoteHostCtrl.text.trim();
+    final user = _remoteUserCtrl.text.trim();
+    if (host.isEmpty) {
+      _showSnack('请先填写主机名');
+      return;
+    }
+    final path = await resolvePrivateKeyPath(host: host, user: user.isEmpty ? null : user);
+    if (path != null) {
+      _remoteKeyCtrl.text = path;
+      setState(() {});
+      _showSnack('已找到私钥: $path');
+    } else {
+      _showSnack('未在 ~/.ssh 下找到可用私钥');
     }
   }
 
@@ -177,33 +227,11 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _onCheckEnv() async {
+  Future<void> _onDiagnose() async {
     setState(() {
-      _status = '正在检查本地环境...';
+      _status = '正在诊断同步...';
     });
-    final result = await _syncService.checkEnvironment();
-    if (!mounted) return;
-    setState(() {
-      _status = result;
-    });
-  }
-
-  Future<void> _onFixPermissions() async {
-    setState(() {
-      _status = '正在尝试修复 Mutagen 权限...';
-    });
-    final result = await _syncService.fixPermissions();
-    if (!mounted) return;
-    setState(() {
-      _status = result;
-    });
-  }
-
-  Future<void> _onOpenTerminalFix() async {
-    setState(() {
-      _status = '正在打开 Terminal 并填入修复命令...';
-    });
-    final result = await _syncService.openTerminalForPermissionFix();
+    final result = await _syncService.diagnoseLocalSync();
     if (!mounted) return;
     setState(() {
       _status = result;
@@ -222,16 +250,26 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('CodeBiSync'),
         centerTitle: true,
+        actions: [
+          Tooltip(
+            message: _stackedLayout ? '切换为左右布局' : '切换为上下布局',
+            child: IconButton(
+              icon: Icon(_stackedLayout ? Icons.view_week : Icons.view_agenda),
+              onPressed: () => setState(() => _stackedLayout = !_stackedLayout),
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
             final isWide = constraints.maxWidth >= 1000;
-            final content = isWide
+            final useRow = !_stackedLayout && isWide;
+            final content = useRow
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(child: _DirectoryColumn.local(
+                      Expanded(flex: 1, child: _DirectoryColumn.local(
                         controller: _localDirCtrl,
                         entries: _localEntries,
                         loading: _loadingLocal,
@@ -243,19 +281,27 @@ class _HomePageState extends State<HomePage> {
                         },
                       )),
                       const SizedBox(width: 24),
-                      Expanded(child: _DirectoryColumn.remote(
+                      Expanded(flex: 2, child: _DirectoryColumn.remote(
                         remoteHostCtrl: _remoteHostCtrl,
                         remoteUserCtrl: _remoteUserCtrl,
                         remoteDirCtrl: _remoteDirCtrl,
+                        remotePortCtrl: _remotePortCtrl,
+                        remotePassCtrl: _remotePassCtrl,
+                        remoteKeyCtrl: _remoteKeyCtrl,
+                        remoteKeyPassCtrl: _remoteKeyPassCtrl,
                         entries: _remoteEntries,
                         loading: _loadingRemote,
                         errorText: _remoteError,
                         onRefresh: _loadRemoteEntries,
-                        onChanged: ({remotePath, remoteUser, remoteHost}) {
+                        onPickRemoteDir: _pickRemoteDir,
+                        onPickPrivateKey: _resolvePrivateKey,
+                        onChanged: ({remotePath, remoteUser, remoteHost, port, password, keyPath, keyPass}) {
                           _syncService.updateConfig(
                             remotePath: remotePath,
                             remoteUser: remoteUser,
                             remoteHost: remoteHost,
+                            remotePort: port,
+                            identityFile: keyPath,
                           );
                         },
                       )),
@@ -263,7 +309,7 @@ class _HomePageState extends State<HomePage> {
                   )
                 : Column(
                     children: [
-                      Expanded(child: _DirectoryColumn.local(
+                      SizedBox(height: 300, child: _DirectoryColumn.local(
                         controller: _localDirCtrl,
                         entries: _localEntries,
                         loading: _loadingLocal,
@@ -275,26 +321,34 @@ class _HomePageState extends State<HomePage> {
                         },
                       )),
                       const SizedBox(height: 24),
-                      Expanded(child: _DirectoryColumn.remote(
+                      SizedBox(height: 560, child: _DirectoryColumn.remote(
                         remoteHostCtrl: _remoteHostCtrl,
                         remoteUserCtrl: _remoteUserCtrl,
                         remoteDirCtrl: _remoteDirCtrl,
+                        remotePortCtrl: _remotePortCtrl,
+                        remotePassCtrl: _remotePassCtrl,
+                        remoteKeyCtrl: _remoteKeyCtrl,
+                        remoteKeyPassCtrl: _remoteKeyPassCtrl,
                         entries: _remoteEntries,
                         loading: _loadingRemote,
                         errorText: _remoteError,
                         onRefresh: _loadRemoteEntries,
-                        onChanged: ({remotePath, remoteUser, remoteHost}) {
+                        onPickRemoteDir: _pickRemoteDir,
+                        onPickPrivateKey: _resolvePrivateKey,
+                        onChanged: ({remotePath, remoteUser, remoteHost, port, password, keyPath, keyPass}) {
                           _syncService.updateConfig(
                             remotePath: remotePath,
                             remoteUser: remoteUser,
                             remoteHost: remoteHost,
+                            remotePort: port,
+                            identityFile: keyPath,
                           );
                         },
                       )),
                     ],
                   );
 
-            return Column(
+            final page = Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
@@ -315,19 +369,9 @@ class _HomePageState extends State<HomePage> {
                         label: const Text('Status'),
                       ),
                       OutlinedButton.icon(
-                        onPressed: _onCheckEnv,
+                        onPressed: _onDiagnose,
                         icon: const Icon(Icons.health_and_safety_outlined),
-                        label: const Text('检查环境'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: _onFixPermissions,
-                        icon: const Icon(Icons.build_circle_outlined),
-                        label: const Text('修复权限'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: _onOpenTerminalFix,
-                        icon: const Icon(Icons.code),
-                        label: const Text('终端中修复'),
+                        label: const Text('诊断同步'),
                       ),
                       SizedBox(
                         width: isWide ? 320 : double.infinity,
@@ -347,11 +391,9 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: content,
-                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: useRow ? SizedBox(height: constraints.maxHeight - 210, child: content) : content,
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
@@ -373,6 +415,18 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               ],
+            );
+
+            return Scrollbar(
+              controller: _pageScrollCtrl,
+              thumbVisibility: true,
+              child: SingleChildScrollView(
+                controller: _pageScrollCtrl,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                  child: page,
+                ),
+              ),
             );
           },
         ),
@@ -432,11 +486,17 @@ class _DirectoryColumn extends StatelessWidget {
     required TextEditingController remoteHostCtrl,
     required TextEditingController remoteUserCtrl,
     required TextEditingController remoteDirCtrl,
+    TextEditingController? remotePortCtrl,
+    TextEditingController? remotePassCtrl,
+    TextEditingController? remoteKeyCtrl,
+    TextEditingController? remoteKeyPassCtrl,
     required List<SyncEntry> entries,
     required bool loading,
     required String? errorText,
     required Future<void> Function() onRefresh,
-    required void Function({String? remotePath, String? remoteUser, String? remoteHost}) onChanged,
+    required void Function({String? remotePath, String? remoteUser, String? remoteHost, int? port, String? password, String? keyPath, String? keyPass}) onChanged,
+    Future<void> Function()? onPickRemoteDir,
+    Future<void> Function()? onPickPrivateKey,
   }) {
     return _DirectoryColumn._(
       title: '远程目录',
@@ -453,6 +513,101 @@ class _DirectoryColumn extends StatelessWidget {
                     labelText: '远程目录 (例如: /home/user/project)',
                   ),
                 ),
+              ),
+              const SizedBox(width: 12),
+              if (onPickRemoteDir != null)
+                FilledButton.tonalIcon(
+                  onPressed: onPickRemoteDir,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('选择目录'),
+                ),
+              const SizedBox(width: 12),
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  // 先尝试自动搜索 ~/.ssh 下的常见位置
+                  var hosts = await loadAllSshConfigs();
+                  if (hosts.isEmpty) {
+                    // 可能是沙盒导致读取失败；提示并让用户选择 ~/.ssh/config 以授权访问
+                    final proceed = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('需要授权读取 ~/.ssh/config'),
+                        content: const Text('由于 macOS 沙盒限制，应用需要您选择一次 SSH 配置文件以授予访问权限。'),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
+                          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('选择文件')),
+                        ],
+                      ),
+                    );
+                    if (proceed != true) return;
+
+                    try {
+                      final typeGroup = const XTypeGroup(label: 'ssh-config', extensions: ['config']);
+                      final picked = await openFile(acceptedTypeGroups: [typeGroup]);
+                      if (picked != null) {
+                        final content = await picked.readAsString();
+                        hosts = SshConfigParser.parse(content);
+                      }
+                    } catch (_) {}
+                  }
+                  if (hosts.isEmpty) return;
+                  // Show simple picker
+                  final selected = await showDialog<SshConfigHost>(
+                    context: context,
+                    builder: (ctx) => SimpleDialog(
+                      title: const Text('选择 SSH Host'),
+                      children: [
+                        SizedBox(
+                          width: 480,
+                          height: 360,
+                          child: ListView.builder(
+                            itemCount: hosts.length,
+                            itemBuilder: (c, i) {
+                              final h = hosts[i];
+                              final subtitle = [
+                                if (h.user != null) 'user: ${h.user}',
+                                if (h.hostName != null) 'host: ${h.hostName}',
+                                if (h.port != null) 'port: ${h.port}',
+                                if (h.identityFiles.isNotEmpty) 'key: ${h.identityFiles.first}',
+                              ].join('  ·  ');
+                              return ListTile(
+                                title: Text(h.host),
+                                subtitle: Text(subtitle),
+                                onTap: () => Navigator.of(ctx).pop(h),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (selected != null) {
+                    remoteUserCtrl.text = selected.user ?? remoteUserCtrl.text;
+                    remoteHostCtrl.text = selected.hostName ?? selected.host;
+                    remotePortCtrl?.text = (selected.port ?? 22).toString();
+                    // 自动解析私钥：优先 IdentityFile；否则从默认路径推断
+                    String? keyPath;
+                    if (selected.identityFiles.isNotEmpty) {
+                      keyPath = selected.identityFiles.first;
+                    } else {
+                      keyPath = await resolvePrivateKeyPath(
+                        host: selected.hostName ?? selected.host,
+                        user: selected.user,
+                      );
+                    }
+                    if (keyPath != null && remoteKeyCtrl != null) {
+                      remoteKeyCtrl.text = keyPath;
+                    }
+                    onChanged(
+                      remoteUser: selected.user,
+                      remoteHost: selected.hostName ?? selected.host,
+                      port: selected.port,
+                      keyPath: keyPath,
+                    );
+                  }
+                },
+                icon: const Icon(Icons.input),
+                label: const Text('从 SSH 配置导入'),
               ),
             ],
           ),
@@ -475,6 +630,54 @@ class _DirectoryColumn extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: remotePortCtrl,
+                  keyboardType: TextInputType.number,
+                  onChanged: (value) => onChanged(port: int.tryParse(value)),
+                  decoration: const InputDecoration(labelText: '端口 (默认 22)'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: remotePassCtrl,
+                  obscureText: true,
+                  onChanged: (value) => onChanged(password: value),
+                  decoration: const InputDecoration(labelText: '密码（使用私钥可留空）'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: remoteKeyCtrl,
+                  onChanged: (value) => onChanged(keyPath: value),
+                  decoration: const InputDecoration(labelText: '私钥文件路径 (PEM)'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (onPickPrivateKey != null)
+                FilledButton.tonalIcon(
+                  onPressed: onPickPrivateKey,
+                  icon: const Icon(Icons.vpn_key),
+                  label: const Text('搜索私钥'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: remoteKeyPassCtrl,
+            obscureText: true,
+            onChanged: (value) => onChanged(keyPass: value),
+            decoration: const InputDecoration(labelText: '私钥 Passphrase（如果有）'),
           ),
         ],
       ),
@@ -537,11 +740,6 @@ class _DirectoryColumn extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            if (title == '远程目录')
-              Text(
-                '远程文件列表暂基于 Mutagen 会话，启动同步后将显示最近一次的状态快照。',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
           ],
         ),
       ),
@@ -626,12 +824,18 @@ class _DirectoryListTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(entry.name, style: Theme.of(context).textTheme.bodyLarge),
+                  Text(
+                    entry.name,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   const SizedBox(height: 4),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
                     children: [
                       _InfoChip(label: '修改', value: modified),
-                      const SizedBox(width: 8),
                       _InfoChip(label: '同步', value: synced),
                     ],
                   ),

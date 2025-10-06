@@ -3,14 +3,25 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../models/sync_entry.dart';
+import '../sync/impl/local_endpoint.dart';
+import '../sync/impl/rsync_endpoint.dart';
+import '../sync/impl/fs_watcher.dart';
+import '../sync/impl/simple_differ.dart';
+import '../sync/impl/simple_stager.dart';
+import '../sync/impl/local_transport.dart';
+import '../sync/impl/file_state_store.dart';
+import '../sync/session.dart';
+import '../sync/sync_controller.dart';
 
 class SyncConfig {
   String? localPath;
   String? remoteUser;
   String? remoteHost;
   String? remotePath;
+  int? remotePort;
+  String? identityFile;
 
-  SyncConfig({this.localPath, this.remoteUser, this.remoteHost, this.remotePath});
+  SyncConfig({this.localPath, this.remoteUser, this.remoteHost, this.remotePath, this.remotePort, this.identityFile});
 
   bool get isComplete =>
       (localPath != null && localPath!.isNotEmpty) &&
@@ -40,11 +51,13 @@ class SyncService {
     return env;
   }
 
-  void updateConfig({String? localPath, String? remoteUser, String? remoteHost, String? remotePath}) {
+  void updateConfig({String? localPath, String? remoteUser, String? remoteHost, String? remotePath, int? remotePort, String? identityFile}) {
     if (localPath != null) config.localPath = localPath;
     if (remoteUser != null) config.remoteUser = remoteUser;
     if (remoteHost != null) config.remoteHost = remoteHost;
     if (remotePath != null) config.remotePath = remotePath;
+    if (remotePort != null) config.remotePort = remotePort;
+    if (identityFile != null) config.identityFile = identityFile;
   }
 
   /// Parse an ssh command string to extract `[user]` and `host`.
@@ -95,42 +108,84 @@ class SyncService {
     return out;
   }
 
+  final SyncController _controller = SyncController();
+  bool _sessionRunning = false;
+
   Future<void> up() async {
-    if (!config.isComplete) {
-      throw StateError('配置不完整：需要本地目录、远程用户名、远端名称、远程目录');
+    // Switch to internal sync pipeline: require local and remote paths only
+    if (config.localPath == null || config.localPath!.isEmpty || config.remotePath == null || config.remotePath!.isEmpty) {
+      throw StateError('配置不完整：需要本地目录和目标目录');
     }
 
-    final local = config.localPath!;
-    final remoteSpec = '${config.remoteUser}@${config.remoteHost}:${config.remotePath}';
+    final alpha = LocalEndpoint(config.localPath!);
+    final beta = RsyncEndpoint(
+      host: config.remoteHost!,
+      user: config.remoteUser!,
+      remoteRoot: config.remotePath!,
+      localRoot: config.localPath!,
+      port: config.remotePort ?? 22,
+      identityFile: config.identityFile,
+    );
+    final watcher = FsWatcher(interval: const Duration(seconds: 2));
+    final differ = SimpleDiffer();
+    final stager = SimpleStager(config.localPath!);
+    final transport = LocalTransport();
+    final statePath = p.join(config.localPath!, '.codebisync', 'baseline.json');
+    final store = FileStateStore(statePath);
 
-    // Check existing sessions
-    final listResult = await _mutagen(['sync', 'list']);
-    if (listResult.exitCode == 0 && listResult.stdout.toString().contains(_sessionName)) {
-      await _mutagen(['sync', 'resume', _sessionName]);
-    } else {
-      final createRes = await _mutagen([
-        'sync',
-        'create',
-        '--name', _sessionName,
-        '--sync-mode=two-way-resolved',
-        '--ignore-vcs',
-        local,
-        remoteSpec,
-      ]);
-      if (createRes.exitCode != 0) {
-        throw StateError(_prettyError('mutagen sync create', createRes));
-      }
-    }
+    final session = Session(
+      endpointAlpha: alpha,
+      endpointBeta: beta,
+      watcher: watcher,
+      differ: differ,
+      stager: stager,
+      transport: transport,
+      stateStore: store,
+    );
 
-    _recordDirectorySync(local);
+    await _controller.createSession(sessionId: _sessionName, session: session);
+    _sessionRunning = true;
+    _recordDirectorySync(config.localPath!);
   }
 
   Future<String> status() async {
-    final res = await _mutagen(['sync', 'list']);
-    if (res.exitCode != 0) {
-      return _prettyError('mutagen sync list', res);
+    if (_sessionRunning && _controller.hasSession(_sessionName)) {
+      return 'Session running (Alpha→Beta). 源: ${config.localPath}\n目标: ${config.remotePath}';
     }
-    return res.stdout.toString();
+    return 'No active session';
+  }
+
+  Future<String> diagnoseLocalSync() async {
+    final lines = <String>[];
+    lines.add('诊断本地同步配置');
+    lines.add('源目录: ${config.localPath ?? '(未设置)'}');
+    lines.add('目标目录: ${config.remotePath ?? '(未设置)'}');
+
+    if (config.localPath != null && config.localPath!.isNotEmpty) {
+      final d = Directory(config.localPath!);
+      lines.add('源目录存在: ${await d.exists()}');
+      if (await d.exists()) {
+        final localEntries = await listLocalEntries(config.localPath!);
+        lines.add('源目录条目数: ${localEntries.length}');
+        final baseline = p.join(config.localPath!, '.codebisync', 'baseline.json');
+        lines.add('基线文件: ${File(baseline).existsSync() ? baseline : '不存在'}');
+      }
+    }
+
+    if (config.remotePath != null && config.remotePath!.isNotEmpty) {
+      final d = Directory(config.remotePath!);
+      lines.add('目标目录存在: ${await d.exists()}');
+      if (await d.exists()) {
+        final remoteEntries = await listLocalEntries(config.remotePath!);
+        lines.add('目标目录条目数: ${remoteEntries.length}');
+      }
+    }
+
+    lines.add(_sessionRunning && _controller.hasSession(_sessionName)
+        ? '会话状态: 运行中'
+        : '会话状态: 未运行');
+
+    return lines.join('\n');
   }
 
   Future<String> checkEnvironment() async {
