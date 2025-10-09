@@ -154,13 +154,26 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
         case ChangeType.modify:
           if (change.metadata?.isDirectory == true) {
             await _ssh(['mkdir', '-p', _remotePath(rel)]);
+            // 验证目录是否创建成功
+            if (!(await _verifyRemotePathExists(rel, isDirectory: true))) {
+              throw Exception('Failed to create remote directory: $rel');
+            }
           } else {
             await _ensureRemoteDir(rel);
+            // 使用rsync传输文件
             await _rsyncFile(rel);
+            // 验证文件是否传输成功
+            if (!(await _verifyRemotePathExists(rel, isDirectory: false))) {
+              throw Exception('Failed to sync file: $rel');
+            }
           }
           break;
         case ChangeType.delete:
           await _ssh(['rm', '-rf', _remotePath(rel)]);
+          // 验证文件是否删除成功
+          if (await _verifyRemotePathExists(rel, isDirectory: null)) {
+            throw Exception('Failed to delete remote path: $rel');
+          }
           break;
         case ChangeType.rename:
           final old = change.oldPath;
@@ -168,9 +181,19 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
             final oldNorm = _normalizeRemoteRelative(old);
             await _ssh(['mkdir', '-p', _remotePath(_posix.dirname(rel))]);
             await _ssh(['mv', _remotePath(oldNorm), _remotePath(rel)]);
+            // 验证重命名是否成功
+            if (!(await _verifyRemotePathExists(rel, isDirectory: null)) ||
+                await _verifyRemotePathExists(oldNorm, isDirectory: null)) {
+              throw Exception(
+                  'Failed to rename remote path from $oldNorm to $rel');
+            }
           } else {
             await _ensureRemoteDir(rel);
             await _rsyncFile(rel);
+            // 验证文件是否传输成功
+            if (!(await _verifyRemotePathExists(rel, isDirectory: false))) {
+              throw Exception('Failed to sync file: $rel');
+            }
           }
           break;
         case ChangeType.metadataChange:
@@ -179,11 +202,91 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
     }
   }
 
+  // 验证远程路径是否存在
+  Future<bool> _verifyRemotePathExists(String relPath,
+      {bool? isDirectory}) async {
+    final normPath = _normalizeRemoteRelative(relPath);
+    final checkCmd = isDirectory != null
+        ? ['test', '-${isDirectory ? 'd' : 'f'}', _remotePath(normPath)]
+        : ['test', '-e', _remotePath(normPath)];
+
+    try {
+      final result = await _ssh(checkCmd, throwOnError: false);
+      return result.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<ProcessResult> _ssh(List<String> cmdArgs,
+      {bool throwOnError = true}) async {
+    final args = <String>[
+      '-p',
+      port.toString(),
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=/dev/null',
+      '-o',
+      'BatchMode=yes',
+      if (identityFile != null && identityFile!.isNotEmpty) ...[
+        '-i',
+        identityFile!
+      ],
+      '$user@$host',
+      ...cmdArgs,
+    ];
+    final res = await Process.run('ssh', args);
+    if (throwOnError && res.exitCode != 0) {
+      throw ProcessException('ssh', args, res.stderr, res.exitCode);
+    }
+    return res;
+  }
+
+  // 增强的rsync文件传输方法
+  Future<void> _rsyncFile(String relPath) async {
+    final src = _joinLocal(_localRootCanonical, relPath);
+    final destDir = _remotePath(_posix.dirname(relPath));
+    final userAtHost = '$user@$host';
+    final sshArgs = [
+      'ssh',
+      '-p',
+      port.toString(),
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=/dev/null',
+      '-o',
+      'BatchMode=yes',
+      if (identityFile != null && identityFile!.isNotEmpty) ...[
+        '-i',
+        identityFile!
+      ],
+    ];
+
+    // 添加校验和比较和详细输出
+    final args = [
+      '-avz', // 添加压缩以提高传输效率
+      '--checksum', // 使用校验和比较文件，确保完全一致
+      '--progress', // 显示传输进度
+      '--chmod=ugo=rwX', // 确保适当的权限
+      '--times', // 保留修改时间
+      '-e', sshArgs.join(' '),
+      src,
+      '$userAtHost:${_quote(destDir)}/',
+    ];
+    final res = await Process.run('rsync', args);
+    if (res.exitCode != 0) {
+      throw ProcessException('rsync', args, res.stderr, res.exitCode);
+    }
+  }
+
   @override
   Future<void> pull(String relPath) async {
     final rel = _normalizeRemoteRelative(relPath);
     final src = '${_userAtHost()}:${_quote(_remotePath(rel))}';
-    final destDir = Directory(_joinLocal(_localRootCanonical, _posix.dirname(rel)));
+    final destDir =
+        Directory(_joinLocal(_localRootCanonical, _posix.dirname(rel)));
     await destDir.create(recursive: true);
 
     final args = [
@@ -242,8 +345,10 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
     return fileRes ?? {};
   }
 
-  Future<Map<String, FileMetadata>?> _runRsyncList(String rel, {required bool treatAsDirectory}) async {
-    final target = '${_userAtHost()}:${_quote(_remoteListTarget(rel, treatAsDirectory))}';
+  Future<Map<String, FileMetadata>?> _runRsyncList(String rel,
+      {required bool treatAsDirectory}) async {
+    final target =
+        '${_userAtHost()}:${_quote(_remoteListTarget(rel, treatAsDirectory))}';
     final args = [
       '-av',
       '--list-only',
@@ -305,7 +410,8 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
       final isDir = typeChar == 'd';
       final size = int.tryParse(sizeStr) ?? 0;
       final timestamp =
-          DateTime.tryParse('${dateStr.replaceAll('/', '-') }T$timeStr') ?? DateTime.now();
+          DateTime.tryParse('${dateStr.replaceAll('/', '-')}T$timeStr') ??
+              DateTime.now();
 
       out[normalized] = FileMetadata(
         path: normalized,
@@ -424,7 +530,10 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
       'UserKnownHostsFile=/dev/null',
       '-o',
       'BatchMode=yes',
-      if (identityFile != null && identityFile!.isNotEmpty) ...['-i', identityFile!],
+      if (identityFile != null && identityFile!.isNotEmpty) ...[
+        '-i',
+        identityFile!
+      ],
     ];
   }
 

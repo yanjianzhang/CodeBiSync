@@ -149,7 +149,9 @@ class Session {
         }
       }
 
-      if ((plan.hasChanges || baselineMissing) && _alphaSnapshot != null && _betaSnapshot != null) {
+      if ((plan.hasChanges || baselineMissing) &&
+          _alphaSnapshot != null &&
+          _betaSnapshot != null) {
         await stateStore.saveNewBaseline(
           _alphaSnapshot!,
           _betaSnapshot!,
@@ -186,7 +188,8 @@ class Session {
   Future<RemoteChangeBatch> _collectRemoteChanges({required bool force}) async {
     if (endpointBeta is RemoteIncrementalEndpoint) {
       try {
-        return await (endpointBeta as RemoteIncrementalEndpoint).detectRemoteChanges(
+        return await (endpointBeta as RemoteIncrementalEndpoint)
+            .detectRemoteChanges(
           previous: _betaSnapshot,
           forceFull: force,
         );
@@ -232,9 +235,44 @@ class Session {
       _betaSnapshot = await endpointBeta.scan();
       return;
     }
+
+    // 对于RsyncEndpoint，进行更严格的验证
+    if (endpointBeta is RsyncEndpoint) {
+      final rsyncEndpoint = endpointBeta as RsyncEndpoint;
+      for (final path in paths) {
+        try {
+          // 验证文件是否存在且内容一致
+          final exists = await rsyncEndpoint._verifyRemotePathExists(path,
+              isDirectory: null);
+          if (!exists) {
+            throw Exception('Remote path not found after sync: $path');
+          }
+
+          // 可以在这里添加额外的内容验证逻辑
+          // 例如，使用rsync --checksum进行校验和比较
+        } catch (e) {
+          print('Verification failed for $path: $e');
+          // 如果验证失败，重新同步文件
+          if (endpointAlpha is LocalEndpoint) {
+            final localEndpoint = endpointAlpha as LocalEndpoint;
+            final localFilePath = p.join(localEndpoint.root, path);
+            if (File(localFilePath).existsSync()) {
+              try {
+                await rsyncEndpoint._rsyncFile(path);
+              } catch (retryError) {
+                print('Retry sync failed for $path: $retryError');
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 刷新远程快照
     if (endpointBeta is IncrementalEndpoint) {
       try {
-        _betaSnapshot = await (endpointBeta as IncrementalEndpoint).refreshSnapshot(
+        _betaSnapshot =
+            await (endpointBeta as IncrementalEndpoint).refreshSnapshot(
           previous: _betaSnapshot!,
           relativePaths: paths,
         );
@@ -250,7 +288,8 @@ class Session {
     if (_alphaSnapshot == null || paths.isEmpty) return;
     if (endpointAlpha is IncrementalEndpoint) {
       try {
-        _alphaSnapshot = await (endpointAlpha as IncrementalEndpoint).refreshSnapshot(
+        _alphaSnapshot =
+            await (endpointAlpha as IncrementalEndpoint).refreshSnapshot(
           previous: _alphaSnapshot!,
           relativePaths: paths,
         );

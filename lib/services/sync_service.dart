@@ -326,12 +326,59 @@ class SyncService {
     return SyncStatus.synced;
   }
 
+  Future<void> _recordFileSync(String filePath) {
+    // 记录单个文件的同步状态
+    _lastSyncRecords[filePath] = DateTime.now();
+    return Future.value();
+  }
+
   void _recordDirectorySync(String path) {
     final dir = Directory(path);
     if (!dir.existsSync()) return;
 
-    for (final entity in dir.listSync(followLinks: false)) {
-      _lastSyncRecords[entity.path] = DateTime.now();
+    // 只记录最顶层目录，具体文件的同步记录由同步过程中单独记录
+    _lastSyncRecords[path] = DateTime.now();
+  }
+
+  // 验证远程文件是否与本地文件一致
+  Future<bool> verifyRemoteFile(String relativePath) async {
+    if (config.localPath == null || config.remotePath == null) {
+      return false;
+    }
+
+    try {
+      final localFile = File(p.join(config.localPath!, relativePath));
+      if (!localFile.existsSync()) {
+        return false;
+      }
+
+      final localStats = await localFile.stat();
+
+      // 创建临时的RsyncEndpoint进行验证
+      final endpoint = RsyncEndpoint(
+        host: config.remoteHost ?? '',
+        user: config.remoteUser ?? '',
+        remoteRoot: config.remotePath ?? '',
+        localRoot: config.localPath ?? '',
+        port: config.remotePort ?? 22,
+        identityFile: config.identityFile,
+      );
+
+      // 使用rsync的dry-run模式检查文件是否相同
+      final args = [
+        '-avn', // n表示dry-run
+        '--checksum', // 使用校验和比较
+        '-e', endpoint._sshCommandString(), // 注意：这需要将_sshCommandString方法改为公开
+        p.join(config.localPath!, relativePath),
+        '${config.remoteUser}@${config.remoteHost}:${endpoint._remotePath(relativePath)}',
+      ];
+
+      final result = await Process.run('rsync', args);
+      // 如果没有输出，表示文件相同
+      final output = result.stdout.toString();
+      return !output.contains(relativePath) && result.exitCode == 0;
+    } catch (_) {
+      return false;
     }
   }
 }
