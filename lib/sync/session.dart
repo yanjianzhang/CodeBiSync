@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'endpoint.dart';
 import 'watcher.dart';
 import 'snapshot.dart';
@@ -16,6 +18,7 @@ class Session {
   final StateStore stateStore;
 
   bool _canceled = false;
+  Snapshot? _alphaSnapshot;
 
   Session({
     required this.endpointAlpha,
@@ -32,13 +35,30 @@ class Session {
   }
 
   Future<void> runLoop() async {
-    while (!_canceled) {
-      // 等待变更或超时
-      await watcher.waitForChangeOrTimeout();
+    watcher.drainChanges(); // 清理启动时的噪音事件
+    var firstIteration = true;
 
-      // 扫描两端
-      Snapshot alphaSnap = await endpointAlpha.scan();
-      Snapshot betaSnap = await endpointBeta.scan();
+    while (!_canceled) {
+      WatchEventBatch batch;
+      if (firstIteration) {
+        batch = WatchEventBatch.fullRescan();
+        firstIteration = false;
+      } else {
+        await watcher.waitForChangeOrTimeout();
+        batch = watcher.drainChanges();
+        if (!batch.requiresFullRescan && batch.paths.isEmpty) {
+          continue;
+        }
+      }
+
+      final alphaSnap = await _scanAlpha(batch);
+      if (alphaSnap == null) {
+        await Future.delayed(const Duration(milliseconds: 250));
+        continue;
+      }
+      _alphaSnapshot = alphaSnap;
+
+      final betaSnap = await endpointBeta.scan();
 
       // 载入基线
       Snapshot? baseAlpha = stateStore.loadBaselineAlpha();
@@ -93,6 +113,30 @@ class Session {
         // 保存新基线（此处简单地用本轮扫描作为新基线）
         await stateStore.saveNewBaseline(alphaSnap, betaSnap, StagingData(metadataChanges: [], dataChunks: []));
       }
+    }
+  }
+
+  Future<Snapshot?> _scanAlpha(WatchEventBatch batch) async {
+    try {
+      if (_alphaSnapshot == null || batch.requiresFullRescan) {
+        return await endpointAlpha.scan();
+      }
+
+      if (batch.paths.isEmpty) {
+        return _alphaSnapshot;
+      }
+
+      if (endpointAlpha is IncrementalEndpoint) {
+        final inc = endpointAlpha as IncrementalEndpoint;
+        return await inc.refreshSnapshot(
+          previous: _alphaSnapshot!,
+          relativePaths: batch.paths,
+        );
+      }
+
+      return await endpointAlpha.scan();
+    } catch (_) {
+      return null;
     }
   }
 }

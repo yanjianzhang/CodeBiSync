@@ -114,7 +114,11 @@ class SyncService {
       port: config.remotePort ?? 22,
       identityFile: config.identityFile,
     );
-    final watcher = FsWatcher(interval: const Duration(seconds: 2));
+    final watcher = FsWatcher(
+      root: config.localPath!,
+      maxInterval: const Duration(seconds: 3),
+      debounce: const Duration(milliseconds: 200),
+    );
     final differ = SimpleDiffer();
     final stager = SimpleStager(config.localPath!);
     final transport = LocalTransport();

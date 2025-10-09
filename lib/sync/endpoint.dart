@@ -23,3 +23,11 @@ abstract class Endpoint {
   /// 修改文件元数据（如修改时间、权限等）
   Future<void> setMetadata(String path, FileMetadata metadata);
 }
+
+abstract class IncrementalEndpoint implements Endpoint {
+  /// 基于已有快照，针对给定相对路径集合做增量刷新。
+  Future<Snapshot> refreshSnapshot({
+    required Snapshot previous,
+    required Set<String> relativePaths,
+  });
+}

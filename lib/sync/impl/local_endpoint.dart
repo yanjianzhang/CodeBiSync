@@ -1,15 +1,23 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../endpoint.dart';
 import '../stager.dart';
 import '../differ.dart';
 import '../snapshot.dart';
 import '../util.dart';
 
-class LocalEndpoint implements Endpoint {
+class LocalEndpoint implements IncrementalEndpoint {
   final String root;
+  late final String _rootCanonical;
+  late final String _rootWithSep;
 
-  LocalEndpoint(this.root);
+  LocalEndpoint(this.root) {
+    final abs = Directory(root).absolute.path;
+    _rootCanonical = p.normalize(abs);
+    _rootWithSep = _rootCanonical.endsWith(p.separator) ? _rootCanonical : '$_rootCanonical${p.separator}';
+  }
 
   @override
   Future<void> apply(StagingData staging) async {
@@ -67,7 +75,7 @@ class LocalEndpoint implements Endpoint {
 
   @override
   Future<Snapshot> scan() async {
-    return scanDirectory(root);
+    return scanDirectory(_rootCanonical);
   }
 
   @override
@@ -130,5 +138,186 @@ class LocalEndpoint implements Endpoint {
   }
 
   String _abs(String relative) =>
-      relative.startsWith(root) ? relative : '${root.endsWith('/') ? root.substring(0, root.length - 1) : root}/$relative';
+      p.isAbsolute(relative) ? p.normalize(relative) : p.normalize(p.join(_rootCanonical, relative));
+
+  String? _relative(String absolute) {
+    final normalized = p.normalize(absolute);
+    if (normalized == _rootCanonical) return '';
+    if (!normalized.startsWith(_rootWithSep)) return null;
+    final rel = p.relative(normalized, from: _rootCanonical);
+    if (rel.startsWith('..')) return null;
+    return rel == '.' ? '' : rel;
+  }
+
+  @override
+  Future<Snapshot> refreshSnapshot({
+    required Snapshot previous,
+    required Set<String> relativePaths,
+  }) async {
+    if (relativePaths.isEmpty) {
+      return previous;
+    }
+
+    if (relativePaths.any((e) => e.isEmpty)) {
+      return scan();
+    }
+
+    final normalized = _normalize(relativePaths);
+    if (normalized.contains('')) {
+      return scan();
+    }
+
+    final next = Map<String, FileMetadata>.from(previous.entries);
+
+    for (final rel in normalized) {
+      await _refreshPath(rel, next);
+    }
+
+    return Snapshot(next);
+  }
+
+  Set<String> _normalize(Set<String> inputs) {
+    final out = <String>{};
+    for (final raw in inputs) {
+      final candidate = raw.trim();
+      if (candidate.isEmpty) {
+        out.clear();
+        out.add('');
+        return out;
+      }
+
+      String value = candidate;
+      if (p.isAbsolute(value)) {
+        final rel = _relative(value);
+        if (rel == null || rel.isEmpty) {
+          out.clear();
+          out.add('');
+          return out;
+        }
+        value = rel;
+      } else {
+        value = p.normalize(value);
+      }
+
+      if (value == '.' || value.startsWith('..')) {
+        out.clear();
+        out.add('');
+        return out;
+      }
+
+      out.add(value);
+    }
+    return out;
+  }
+
+  Future<void> _refreshPath(String rel, Map<String, FileMetadata> map) async {
+    final abs = _abs(rel);
+    FileSystemEntityType type;
+    try {
+      type = await FileSystemEntity.type(abs, followLinks: false);
+    } catch (_) {
+      type = FileSystemEntityType.notFound;
+    }
+
+    switch (type) {
+      case FileSystemEntityType.directory:
+        await _refreshDirectory(rel, map);
+        break;
+      case FileSystemEntityType.file:
+        await _refreshFile(rel, map);
+        break;
+      case FileSystemEntityType.notFound:
+        _removeSubtree(map, rel);
+        break;
+      default:
+        _removeSubtree(map, rel);
+        break;
+    }
+  }
+
+  Future<void> _refreshFile(String rel, Map<String, FileMetadata> map) async {
+    final file = File(_abs(rel));
+    try {
+      final stat = await file.stat();
+      map[rel] = FileMetadata(
+        path: rel,
+        isDirectory: false,
+        size: stat.size,
+        mtime: stat.modified,
+        checksum: null,
+      );
+    } catch (_) {
+      _removeSubtree(map, rel);
+    }
+  }
+
+  Future<void> _refreshDirectory(String rel, Map<String, FileMetadata> map) async {
+    final dir = Directory(_abs(rel));
+    if (!await dir.exists()) {
+      _removeSubtree(map, rel);
+      return;
+    }
+
+    _removeSubtree(map, rel);
+    try {
+      final stat = await dir.stat();
+      map[rel] = FileMetadata(
+        path: rel,
+        isDirectory: true,
+        size: 0,
+        mtime: stat.modified,
+        checksum: null,
+      );
+    } catch (_) {
+      return;
+    }
+
+    try {
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+        final relPath = _relative(entity.path);
+        if (relPath == null || relPath.isEmpty) continue;
+        try {
+          final stat = await entity.stat();
+          if (entity is File) {
+            map[relPath] = FileMetadata(
+              path: relPath,
+              isDirectory: false,
+              size: stat.size,
+              mtime: stat.modified,
+              checksum: null,
+            );
+          } else if (entity is Directory) {
+            map[relPath] = FileMetadata(
+              path: relPath,
+              isDirectory: true,
+              size: 0,
+              mtime: stat.modified,
+              checksum: null,
+            );
+          }
+        } catch (_) {
+          map.remove(relPath);
+        }
+      }
+    } catch (_) {
+      // Swallow transient listing errors; next full scan will fix.
+    }
+  }
+
+  void _removeSubtree(Map<String, FileMetadata> map, String rel) {
+    if (rel.isEmpty) {
+      map.clear();
+      return;
+    }
+    final prefix = '$rel${p.separator}';
+    final toRemove = <String>[];
+    map.forEach((key, value) {
+      if (key == rel || key.startsWith(prefix)) {
+        toRemove.add(key);
+      }
+    });
+    for (final key in toRemove) {
+      map.remove(key);
+    }
+  }
 }
