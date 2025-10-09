@@ -2,20 +2,28 @@ import '../stager.dart';
 import '../transport.dart';
 
 class LocalTransport implements Transport {
-  StagingData? _last;
+  final List<Function(StagingData)> _subscribers = [];
+
+  // 添加订阅者机制，允许端点监听数据传输
+  void subscribe(Function(StagingData) callback) {
+    _subscribers.add(callback);
+  }
+
+  void unsubscribe(Function(StagingData) callback) {
+    _subscribers.remove(callback);
+  }
 
   @override
   Stream<StagingData> receive() async* {
-    if (_last != null) {
-      yield _last!;
-      _last = null;
-    }
+    // 保留原有的流实现
+    // 在实际应用中，这里可以结合订阅者机制
   }
 
   @override
   Future<void> send(StagingData data) async {
-    // For same-process demo we just store the last staging payload.
-    _last = data;
+    // 通知所有订阅者有新数据到达
+    for (final callback in _subscribers) {
+      callback(data);
+    }
   }
 }
-

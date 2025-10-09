@@ -31,3 +31,30 @@ abstract class IncrementalEndpoint implements Endpoint {
     required Set<String> relativePaths,
   });
 }
+
+class RemoteChangeBatch {
+  final bool requiresFullRescan;
+  final Set<String> paths;
+
+  const RemoteChangeBatch({
+    required this.requiresFullRescan,
+    required this.paths,
+  });
+
+  factory RemoteChangeBatch.fullRescan() =>
+      const RemoteChangeBatch(requiresFullRescan: true, paths: <String>{});
+  factory RemoteChangeBatch.empty() =>
+      const RemoteChangeBatch(requiresFullRescan: false, paths: <String>{});
+}
+
+abstract class RemoteIncrementalEndpoint implements IncrementalEndpoint {
+  /// 检测远端自上次快照以来的变更，返回需要刷新的子树集合。
+  Future<RemoteChangeBatch> detectRemoteChanges({
+    Snapshot? previous,
+    bool forceFull = false,
+  });
+}
+
+abstract class PullableEndpoint {
+  Future<void> pull(String relativePath);
+}

@@ -21,23 +21,23 @@ class SimpleDiffer implements Differ {
 
       // Create cases
       if (bas == null && a != null && b == null) {
-        alphaToBeta.add(Change(type: ChangeType.Create, path: path, metadata: a));
+        alphaToBeta.add(Change(type: ChangeType.create, path: path, metadata: a));
         continue;
       }
       if (bas == null && b != null && a == null) {
-        betaToAlpha.add(Change(type: ChangeType.Create, path: path, metadata: b));
+        betaToAlpha.add(Change(type: ChangeType.create, path: path, metadata: b));
         continue;
       }
 
       // Delete cases
       if (bas != null && a == null && b != null) {
         // deleted at alpha only -> delete beta
-        betaToAlpha.add(Change(type: ChangeType.Delete, path: path));
+        betaToAlpha.add(Change(type: ChangeType.delete, path: path));
         continue;
       }
       if (bas != null && b == null && a != null) {
         // deleted at beta only -> delete beta target or push from alpha?
-        alphaToBeta.add(Change(type: ChangeType.Delete, path: path));
+        alphaToBeta.add(Change(type: ChangeType.delete, path: path));
         continue;
       }
 
@@ -51,17 +51,17 @@ class SimpleDiffer implements Differ {
         final bChanged = bas == null || b.mtime.isAfter(bas.mtime) || b.size != bas.size;
 
         if (aChanged && !bChanged) {
-          alphaToBeta.add(Change(type: ChangeType.Modify, path: path, metadata: a));
+          alphaToBeta.add(Change(type: ChangeType.modify, path: path, metadata: a));
         } else if (!aChanged && bChanged) {
-          betaToAlpha.add(Change(type: ChangeType.Modify, path: path, metadata: b));
+          betaToAlpha.add(Change(type: ChangeType.modify, path: path, metadata: b));
         } else if (aChanged && bChanged) {
           // both changed -> conflict (mtime newer side could win later)
           conflicts.add(Conflict(path: path, alphaMetadata: a, betaMetadata: b));
           // default policy: newer mtime wins; emit direction
           if (a.mtime.isAfter(b.mtime)) {
-            alphaToBeta.add(Change(type: ChangeType.Modify, path: path, metadata: a));
+            alphaToBeta.add(Change(type: ChangeType.modify, path: path, metadata: a));
           } else if (b.mtime.isAfter(a.mtime)) {
-            betaToAlpha.add(Change(type: ChangeType.Modify, path: path, metadata: b));
+            betaToAlpha.add(Change(type: ChangeType.modify, path: path, metadata: b));
           }
         }
       }

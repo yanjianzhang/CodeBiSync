@@ -82,6 +82,7 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
   }
 
   Future<void> _connectAndList() async {
+    if (!mounted) return;
     setState(() { _loading = true; _error = null; });
     try {
       // Resolve ssh options from config if available
@@ -104,13 +105,17 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
       _resolvedKeyPath = keyPath;
       await _list(_cwd);
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = '连接失败: $e'; _entries = const []; });
     } finally {
-      setState(() { _loading = false; });
+      if (mounted) {
+        setState(() { _loading = false; });
+      }
     }
   }
 
   Future<void> _list(String path) async {
+    if (!mounted) return;
     setState(() { _loading = true; _error = null; });
     try {
       final items = await RsyncService.list(
@@ -124,11 +129,15 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
         forwardAgent: _forwardAgent,
         dirsOnly: true,
       );
+      if (!mounted) return;
       setState(() { _cwd = path; _entries = items; });
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = '读取目录失败: $e'; _entries = const []; });
     } finally {
-      setState(() { _loading = false; });
+      if (mounted) {
+        setState(() { _loading = false; });
+      }
     }
   }
 
@@ -136,12 +145,13 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
     Navigator.of(context).pop(_cwd);
   }
 
+  @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          color: Theme.of(context).colorScheme.surfaceVariant,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
           child: Row(
             children: [
               Expanded(
@@ -160,11 +170,10 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
                   onPressed: () async {
                     final cmd = _buildRsyncCommand(_cwd);
                     await Clipboard.setData(ClipboardData(text: cmd));
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已复制 rsync 命令')),
-                      );
-                    }
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('已复制 rsync 命令')),
+                    );
                   },
                 ),
               ),
@@ -236,15 +245,15 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
   }
 
   static String _join(String a, String b) {
-    if (a.endsWith('/')) return a + b;
-    return a + '/' + b;
+    if (a.endsWith('/')) return '$a$b';
+    return '$a/$b';
   }
 
   String _buildRsyncCommand(String path) {
     final normalized = path.isEmpty ? '/' : (path.endsWith('/') ? path : '$path/');
     final sshArgs = <String>[
       'ssh',
-      '-p', '${widget.port}',
+      '-p', widget.port.toString(),
       '-o', 'StrictHostKeyChecking=no',
       '-o', 'UserKnownHostsFile=/dev/null',
       '-o', 'BatchMode=yes',
@@ -253,11 +262,12 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
       if (_proxyJump != null && _proxyJump!.isNotEmpty) ...['-J', _proxyJump!],
       if (_resolvedKeyPath != null && _resolvedKeyPath!.isNotEmpty) ...['-i', _resolvedKeyPath!],
     ];
-    final sshPart = '"' + sshArgs.join(' ') + '"';
-    final userAtHost = (widget.username.isNotEmpty ? '${widget.username}@' : '') + widget.host;
-    final remote = userAtHost + ':' + '"' + normalized.replaceAll('"', '\\"') + '"';
+    final sshPart = '"${sshArgs.join(' ')}"';
+    final userAtHost = widget.username.isNotEmpty ? '${widget.username}@${widget.host}' : widget.host;
+    final escapedRemote = normalized.replaceAll('"', '\\"');
+    final remote = '$userAtHost:"$escapedRemote"';
     // Use immediate-only listing to keep it fast, same as UI
-    return 'rsync -av --list-only --exclude "*/**" -e ' + sshPart + ' ' + remote;
+    return 'rsync -av --list-only --exclude "*/**" -e $sshPart $remote';
   }
 
   List<RsyncEntry> get _filteredEntries {

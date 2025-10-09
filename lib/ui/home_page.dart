@@ -21,7 +21,8 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _remoteDirCtrl = TextEditingController();
   final TextEditingController _remoteUserCtrl = TextEditingController();
   final TextEditingController _remoteHostCtrl = TextEditingController();
-  final TextEditingController _remotePortCtrl = TextEditingController(text: '22');
+  final TextEditingController _remotePortCtrl =
+      TextEditingController(text: '22');
   final TextEditingController _remotePassCtrl = TextEditingController();
   final TextEditingController _remoteKeyCtrl = TextEditingController();
   final TextEditingController _remoteKeyPassCtrl = TextEditingController();
@@ -35,7 +36,7 @@ class _HomePageState extends State<HomePage> {
   List<SyncEntry> _remoteEntries = const [];
   String? _localError;
   String? _remoteError;
-  
+
   Future<void> _pickRemoteDir() async {
     final host = _remoteHostCtrl.text.trim();
     final user = _remoteUserCtrl.text.trim();
@@ -51,8 +52,11 @@ class _HomePageState extends State<HomePage> {
       username: user,
       password: pass,
       port: port,
-      initialPath: _remoteDirCtrl.text.trim().isEmpty ? '/' : _remoteDirCtrl.text.trim(),
-      privateKeyPath: _remoteKeyCtrl.text.trim().isEmpty ? null : _remoteKeyCtrl.text.trim(),
+      initialPath:
+          _remoteDirCtrl.text.trim().isEmpty ? '/' : _remoteDirCtrl.text.trim(),
+      privateKeyPath: _remoteKeyCtrl.text.trim().isEmpty
+          ? null
+          : _remoteKeyCtrl.text.trim(),
       privateKeyPassphrase: _remoteKeyPassCtrl.text,
     );
     if (picked != null && picked.isNotEmpty) {
@@ -169,7 +173,8 @@ class _HomePageState extends State<HomePage> {
       _showSnack('请先填写主机名');
       return;
     }
-    final path = await resolvePrivateKeyPath(host: host, user: user.isEmpty ? null : user);
+    final path = await resolvePrivateKeyPath(
+        host: host, user: user.isEmpty ? null : user);
     if (path != null) {
       _remoteKeyCtrl.text = path;
       setState(() {});
@@ -269,82 +274,104 @@ class _HomePageState extends State<HomePage> {
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(flex: 1, child: _DirectoryColumn.local(
-                        controller: _localDirCtrl,
-                        entries: _localEntries,
-                        loading: _loadingLocal,
-                        errorText: _localError,
-                        onRefresh: _loadLocalEntries,
-                        onPickDirectory: _pickLocalDir,
-                        onChanged: (value) {
-                          _syncService.updateConfig(localPath: value);
-                        },
-                      )),
+                      Expanded(
+                          flex: 1,
+                          child: _DirectoryColumn.local(
+                            controller: _localDirCtrl,
+                            entries: _localEntries,
+                            loading: _loadingLocal,
+                            errorText: _localError,
+                            onRefresh: _loadLocalEntries,
+                            onPickDirectory: _pickLocalDir,
+                            onChanged: (value) {
+                              _syncService.updateConfig(localPath: value);
+                            },
+                          )),
                       const SizedBox(width: 24),
-                      Expanded(flex: 2, child: _DirectoryColumn.remote(
-                        remoteHostCtrl: _remoteHostCtrl,
-                        remoteUserCtrl: _remoteUserCtrl,
-                        remoteDirCtrl: _remoteDirCtrl,
-                        remotePortCtrl: _remotePortCtrl,
-                        remotePassCtrl: _remotePassCtrl,
-                        remoteKeyCtrl: _remoteKeyCtrl,
-                        remoteKeyPassCtrl: _remoteKeyPassCtrl,
-                        entries: _remoteEntries,
-                        loading: _loadingRemote,
-                        errorText: _remoteError,
-                        onRefresh: _loadRemoteEntries,
-                        onPickRemoteDir: _pickRemoteDir,
-                        onPickPrivateKey: _resolvePrivateKey,
-                        onChanged: ({remotePath, remoteUser, remoteHost, port, password, keyPath, keyPass}) {
-                          _syncService.updateConfig(
-                            remotePath: remotePath,
-                            remoteUser: remoteUser,
-                            remoteHost: remoteHost,
-                            remotePort: port,
-                            identityFile: keyPath,
-                          );
-                        },
-                      )),
+                      Expanded(
+                          flex: 2,
+                          child: _DirectoryColumn.remote(
+                            remoteHostCtrl: _remoteHostCtrl,
+                            remoteUserCtrl: _remoteUserCtrl,
+                            remoteDirCtrl: _remoteDirCtrl,
+                            remotePortCtrl: _remotePortCtrl,
+                            remotePassCtrl: _remotePassCtrl,
+                            remoteKeyCtrl: _remoteKeyCtrl,
+                            remoteKeyPassCtrl: _remoteKeyPassCtrl,
+                            entries: _remoteEntries,
+                            loading: _loadingRemote,
+                            errorText: _remoteError,
+                            onRefresh: _loadRemoteEntries,
+                            onPickRemoteDir: _pickRemoteDir,
+                            onPickPrivateKey: _resolvePrivateKey,
+                            onChanged: (
+                                {remotePath,
+                                remoteUser,
+                                remoteHost,
+                                port,
+                                password,
+                                keyPath,
+                                keyPass}) {
+                              _syncService.updateConfig(
+                                remotePath: remotePath,
+                                remoteUser: remoteUser,
+                                remoteHost: remoteHost,
+                                remotePort: port,
+                                identityFile: keyPath,
+                              );
+                            },
+                          )),
                     ],
                   )
                 : Column(
                     children: [
-                      SizedBox(height: 300, child: _DirectoryColumn.local(
-                        controller: _localDirCtrl,
-                        entries: _localEntries,
-                        loading: _loadingLocal,
-                        errorText: _localError,
-                        onRefresh: _loadLocalEntries,
-                        onPickDirectory: _pickLocalDir,
-                        onChanged: (value) {
-                          _syncService.updateConfig(localPath: value);
-                        },
-                      )),
+                      SizedBox(
+                          height: 300,
+                          child: _DirectoryColumn.local(
+                            controller: _localDirCtrl,
+                            entries: _localEntries,
+                            loading: _loadingLocal,
+                            errorText: _localError,
+                            onRefresh: _loadLocalEntries,
+                            onPickDirectory: _pickLocalDir,
+                            onChanged: (value) {
+                              _syncService.updateConfig(localPath: value);
+                            },
+                          )),
                       const SizedBox(height: 24),
-                      SizedBox(height: 560, child: _DirectoryColumn.remote(
-                        remoteHostCtrl: _remoteHostCtrl,
-                        remoteUserCtrl: _remoteUserCtrl,
-                        remoteDirCtrl: _remoteDirCtrl,
-                        remotePortCtrl: _remotePortCtrl,
-                        remotePassCtrl: _remotePassCtrl,
-                        remoteKeyCtrl: _remoteKeyCtrl,
-                        remoteKeyPassCtrl: _remoteKeyPassCtrl,
-                        entries: _remoteEntries,
-                        loading: _loadingRemote,
-                        errorText: _remoteError,
-                        onRefresh: _loadRemoteEntries,
-                        onPickRemoteDir: _pickRemoteDir,
-                        onPickPrivateKey: _resolvePrivateKey,
-                        onChanged: ({remotePath, remoteUser, remoteHost, port, password, keyPath, keyPass}) {
-                          _syncService.updateConfig(
-                            remotePath: remotePath,
-                            remoteUser: remoteUser,
-                            remoteHost: remoteHost,
-                            remotePort: port,
-                            identityFile: keyPath,
-                          );
-                        },
-                      )),
+                      SizedBox(
+                          height: 560,
+                          child: _DirectoryColumn.remote(
+                            remoteHostCtrl: _remoteHostCtrl,
+                            remoteUserCtrl: _remoteUserCtrl,
+                            remoteDirCtrl: _remoteDirCtrl,
+                            remotePortCtrl: _remotePortCtrl,
+                            remotePassCtrl: _remotePassCtrl,
+                            remoteKeyCtrl: _remoteKeyCtrl,
+                            remoteKeyPassCtrl: _remoteKeyPassCtrl,
+                            entries: _remoteEntries,
+                            loading: _loadingRemote,
+                            errorText: _remoteError,
+                            onRefresh: _loadRemoteEntries,
+                            onPickRemoteDir: _pickRemoteDir,
+                            onPickPrivateKey: _resolvePrivateKey,
+                            onChanged: (
+                                {remotePath,
+                                remoteUser,
+                                remoteHost,
+                                port,
+                                password,
+                                keyPath,
+                                keyPass}) {
+                              _syncService.updateConfig(
+                                remotePath: remotePath,
+                                remoteUser: remoteUser,
+                                remoteHost: remoteHost,
+                                remotePort: port,
+                                identityFile: keyPath,
+                              );
+                            },
+                          )),
                     ],
                   );
 
@@ -352,7 +379,8 @@ class _HomePageState extends State<HomePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                   child: Wrap(
                     crossAxisAlignment: WrapCrossAlignment.center,
                     spacing: 12,
@@ -393,7 +421,10 @@ class _HomePageState extends State<HomePage> {
                 ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: useRow ? SizedBox(height: constraints.maxHeight - 210, child: content) : content,
+                  child: useRow
+                      ? SizedBox(
+                          height: constraints.maxHeight - 210, child: content)
+                      : content,
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
@@ -494,7 +525,15 @@ class _DirectoryColumn extends StatelessWidget {
     required bool loading,
     required String? errorText,
     required Future<void> Function() onRefresh,
-    required void Function({String? remotePath, String? remoteUser, String? remoteHost, int? port, String? password, String? keyPath, String? keyPass}) onChanged,
+    required void Function(
+            {String? remotePath,
+            String? remoteUser,
+            String? remoteHost,
+            int? port,
+            String? password,
+            String? keyPath,
+            String? keyPass})
+        onChanged,
     Future<void> Function()? onPickRemoteDir,
     Future<void> Function()? onPickPrivateKey,
   }) {
@@ -526,31 +565,39 @@ class _DirectoryColumn extends StatelessWidget {
                 onPressed: () async {
                   // 先尝试自动搜索 ~/.ssh 下的常见位置
                   var hosts = await loadAllSshConfigs();
+                  if (!context.mounted) return;
                   if (hosts.isEmpty) {
                     // 可能是沙盒导致读取失败；提示并让用户选择 ~/.ssh/config 以授权访问
                     final proceed = await showDialog<bool>(
                       context: context,
                       builder: (ctx) => AlertDialog(
                         title: const Text('需要授权读取 ~/.ssh/config'),
-                        content: const Text('由于 macOS 沙盒限制，应用需要您选择一次 SSH 配置文件以授予访问权限。'),
+                        content: const Text(
+                            '由于 macOS 沙盒限制，应用需要您选择一次 SSH 配置文件以授予访问权限。'),
                         actions: [
-                          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-                          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('选择文件')),
+                          TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('取消')),
+                          FilledButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              child: const Text('选择文件')),
                         ],
                       ),
                     );
-                    if (proceed != true) return;
+                    if (proceed != true || !context.mounted) return;
 
                     try {
-                      final typeGroup = const XTypeGroup(label: 'ssh-config', extensions: ['config']);
-                      final picked = await openFile(acceptedTypeGroups: [typeGroup]);
+                      const typeGroup = XTypeGroup(
+                          label: 'ssh-config', extensions: ['config']);
+                      final picked =
+                          await openFile(acceptedTypeGroups: [typeGroup]);
                       if (picked != null) {
                         final content = await picked.readAsString();
                         hosts = SshConfigParser.parse(content);
                       }
                     } catch (_) {}
                   }
-                  if (hosts.isEmpty) return;
+                  if (hosts.isEmpty || !context.mounted) return;
                   // Show simple picker
                   final selected = await showDialog<SshConfigHost>(
                     context: context,
@@ -568,7 +615,8 @@ class _DirectoryColumn extends StatelessWidget {
                                 if (h.user != null) 'user: ${h.user}',
                                 if (h.hostName != null) 'host: ${h.hostName}',
                                 if (h.port != null) 'port: ${h.port}',
-                                if (h.identityFiles.isNotEmpty) 'key: ${h.identityFiles.first}',
+                                if (h.identityFiles.isNotEmpty)
+                                  'key: ${h.identityFiles.first}',
                               ].join('  ·  ');
                               return ListTile(
                                 title: Text(h.host),
@@ -581,29 +629,32 @@ class _DirectoryColumn extends StatelessWidget {
                       ],
                     ),
                   );
-                  if (selected != null) {
-                    remoteUserCtrl.text = selected.user ?? remoteUserCtrl.text;
-                    remoteHostCtrl.text = selected.hostName ?? selected.host;
-                    remotePortCtrl?.text = (selected.port ?? 22).toString();
-                    // 自动解析私钥：优先 IdentityFile；否则从默认路径推断
-                    String? keyPath;
-                    if (selected.identityFiles.isNotEmpty) {
-                      keyPath = selected.identityFiles.first;
-                    } else {
-                      keyPath = await resolvePrivateKeyPath(
-                        host: selected.hostName ?? selected.host,
-                        user: selected.user,
-                      );
-                    }
-                    if (keyPath != null && remoteKeyCtrl != null) {
-                      remoteKeyCtrl.text = keyPath;
-                    }
-                    onChanged(
-                      remoteUser: selected.user,
-                      remoteHost: selected.hostName ?? selected.host,
-                      port: selected.port,
-                      keyPath: keyPath,
+                  if (!context.mounted || selected == null) return;
+                  remoteUserCtrl.text = selected.user ?? remoteUserCtrl.text;
+                  remoteHostCtrl.text = selected.hostName ?? selected.host;
+                  remotePortCtrl?.text = (selected.port ?? 22).toString();
+                  // 自动解析私钥：优先 IdentityFile；否则从默认路径推断
+                  String? keyPath;
+                  if (selected.identityFiles.isNotEmpty) {
+                    keyPath = selected.identityFiles.first;
+                  } else {
+                    keyPath = await resolvePrivateKeyPath(
+                      host: selected.hostName ?? selected.host,
+                      user: selected.user,
                     );
+                  }
+                  if (keyPath != null && remoteKeyCtrl != null) {
+                    remoteKeyCtrl.text = keyPath;
+                  }
+                  onChanged(
+                    remoteUser: selected.user,
+                    remoteHost: selected.hostName ?? selected.host,
+                    port: selected.port,
+                    keyPath: keyPath,
+                  );
+                  if (context.mounted) {
+                    // 移除 setState 调用，因为我们已经通过 onChanged 通知了更改
+                    // setState(() {});
                   }
                 },
                 icon: const Icon(Icons.input),
@@ -713,7 +764,10 @@ class _DirectoryColumn extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 IconButton(
@@ -729,7 +783,8 @@ class _DirectoryColumn extends StatelessWidget {
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  color: colorScheme.surfaceVariant.withOpacity(0.35),
+                  color: colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.35),
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: _DirectoryListView(
@@ -803,16 +858,13 @@ class _DirectoryListTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final iconData = entry.isDirectory ? Icons.folder : Icons.description;
-    final statusIcon = _statusIcon(entry.status);
-    final statusColor = _statusColor(colorScheme, entry.status);
-    final modified = _formatDate(entry.modifiedAt);
-    final synced = _formatDate(entry.lastSyncAt);
 
     return Container(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colorScheme.outlineVariant.withOpacity(0.5)),
+        border: Border.all(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
@@ -847,55 +899,5 @@ class _DirectoryListTile extends StatelessWidget {
       default:
         return '🕙';
     }
-  }
-
-  static IconData _statusIcon(SyncStatus status) {
-    switch (status) {
-      case SyncStatus.synced:
-        return Icons.check_circle;
-      case SyncStatus.failed:
-        return Icons.cancel;
-      case SyncStatus.pending:
-      default:
-        return Icons.schedule;
-    }
-  }
-
-  static Color _statusColor(ColorScheme scheme, SyncStatus status) {
-    switch (status) {
-      case SyncStatus.synced:
-        return scheme.primary;
-      case SyncStatus.failed:
-        return scheme.error;
-      case SyncStatus.pending:
-      default:
-        return scheme.secondary;
-    }
-  }
-
-  static String _formatDate(DateTime? dateTime) {
-    if (dateTime == null) return '--';
-    final two = (int v) => v.toString().padLeft(2, '0');
-    return '${dateTime.year}-${two(dateTime.month)}-${two(dateTime.day)} ${two(dateTime.hour)}:${two(dateTime.minute)}';
-  }
-}
-
-class _InfoChip extends StatelessWidget {
-  const _InfoChip({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceVariant.withOpacity(0.6),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text('$label: $value', style: Theme.of(context).textTheme.bodySmall),
-    );
   }
 }

@@ -15,6 +15,7 @@
 
 - Endpoint：`LocalEndpoint`（本地）与 `RsyncEndpoint`（远程，基于 ssh+rsync 推送/拉取）。
 - Watcher：`FsWatcher` 基于文件系统事件监听 + 去抖动，收集变更子树并驱动快速增量同步。
+- Remote Change Detection：`RsyncEndpoint` 通过 `rsync --itemize-changes` + 子树增量刷新确认远端状态，仅在远端真实可见后才记入基线。
 - Differ：`SimpleDiffer` 双向合并与冲突收集（当前采用时间优先策略）。
 - Stager：`SimpleStager` 将 Alpha→Beta 变更打包为“元数据 + 字节块”。
 - Transport：`LocalTransport`（当前用于本机内传递数据）。
@@ -50,7 +51,7 @@ flutter run -d macos   # 或按需启用你的桌面目标
 ## 现状与路线图
 
 - 已实现最小可用的双向同步闭环；冲突处理与 UI 提示将持续完善。
-- 本地侧已启用监听驱动的增量扫描；远程端仍通过 `rsync --list-only` 浏览，后续按需补充监听/推送能力。
+- 本地侧已启用监听驱动的增量扫描；远端通过 `rsync --itemize-changes` 侦测差异并进行子树级增量刷新，确保远端/本地状态都被确认后才标记为已同步。
 - Windows/Linux 桌面目标可通过 `flutter config --enable-windows-desktop` / `--enable-linux-desktop` 启用后生成工程。
 - 已移除遗留的 Mutagen 探测逻辑，统一到 ssh/rsync 路径与提示。
 

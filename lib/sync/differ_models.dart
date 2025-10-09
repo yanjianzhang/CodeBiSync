@@ -1,6 +1,6 @@
 import 'snapshot.dart';
 
-enum ChangeType { Create, Modify, Delete, Rename, MetadataChange }
+enum ChangeType { create, modify, delete, rename, metadataChange }
 
 class Change {
   final ChangeType type;
@@ -41,4 +41,3 @@ class SyncPlan {
 
   bool get hasChanges => alphaToBeta.isNotEmpty || betaToAlpha.isNotEmpty;
 }
-

@@ -25,7 +25,7 @@ class LocalEndpoint implements IncrementalEndpoint {
     for (final change in staging.metadataChanges) {
       final target = _abs(change.path);
       switch (change.type) {
-        case ChangeType.Create:
+        case ChangeType.create:
           if (change.metadata?.isDirectory == true) {
             await Directory(target).create(recursive: true);
           } else {
@@ -34,13 +34,13 @@ class LocalEndpoint implements IncrementalEndpoint {
             await File(target).create(recursive: true);
           }
           break;
-        case ChangeType.Delete:
+        case ChangeType.delete:
           final f = File(target);
           final d = Directory(target);
           if (await f.exists()) await f.delete();
           if (await d.exists()) await d.delete(recursive: true);
           break;
-        case ChangeType.Rename:
+        case ChangeType.rename:
           final old = _abs(change.oldPath ?? change.path);
           if (await File(old).exists()) {
             await File(old).rename(target);
@@ -48,8 +48,8 @@ class LocalEndpoint implements IncrementalEndpoint {
             await Directory(old).rename(target);
           }
           break;
-        case ChangeType.Modify:
-        case ChangeType.MetadataChange:
+        case ChangeType.modify:
+        case ChangeType.metadataChange:
           // For MVP, no-op; file data applied via chunks below
           break;
       }

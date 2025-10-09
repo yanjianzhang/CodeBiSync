@@ -2,7 +2,6 @@ import 'dart:io';
 
 import '../differ.dart';
 import '../stager.dart';
-import '../staging_models.dart';
 
 class SimpleStager implements Stager {
   final String alphaRoot;
@@ -16,7 +15,7 @@ class SimpleStager implements Stager {
 
     for (final ch in plan.alphaToBeta) {
       changes.add(ch);
-      if (ch.type == ChangeType.Create || ch.type == ChangeType.Modify) {
+      if (ch.type == ChangeType.create || ch.type == ChangeType.modify) {
         if (ch.metadata != null && !ch.metadata!.isDirectory) {
           final file = File(_abs(alphaRoot, ch.path));
           if (file.existsSync()) {

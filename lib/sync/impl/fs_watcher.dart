@@ -17,8 +17,6 @@ class FsWatcher implements Watcher {
   Completer<void>? _pendingSignal;
   Timer? _timeoutTimer;
   Timer? _debounceTimer;
-  StreamSubscription<FileSystemEvent>? _subscription;
-
   late final String _rootCanonical;
   late final String _rootWithSep;
 
@@ -34,7 +32,7 @@ class FsWatcher implements Watcher {
     if (!dir.existsSync()) {
       dir.createSync(recursive: true);
     }
-    _subscription = dir.watch(recursive: true).listen(_handleEvent, onError: _handleError);
+    dir.watch(recursive: true).listen(_handleEvent, onError: _handleError);
   }
 
   static String _normalizeRoot(String input) {
@@ -53,7 +51,10 @@ class FsWatcher implements Watcher {
     }
     _pendingSignal ??= Completer<void>();
     _timeoutTimer?.cancel();
-    _timeoutTimer = Timer(maxInterval, _completeNow);
+    _timeoutTimer = Timer(maxInterval, () {
+      _needsFullRescan = true;
+      _completeNow();
+    });
     await _pendingSignal!.future;
   }
 

@@ -63,7 +63,7 @@ class RsyncService {
         if (identityFile != null && identityFile.isNotEmpty) ...['-i', identityFile],
         '${username.isNotEmpty ? '$username@' : ''}$host', 'printf', 'ok',
       ];
-      final pre = await Process.run('ssh', preArgs);
+      await Process.run('ssh', preArgs);
       // If preflight fails (some bastions close trivial commands), continue to rsync which
       // launches rsync --server remotely and often succeeds even if preflight doesn't.
     } catch (_) {}
@@ -71,8 +71,8 @@ class RsyncService {
     final process = await Process.start('rsync', args);
     final outBuf = StringBuffer();
     final errBuf = StringBuffer();
-    process.stdout.transform(SystemEncoding().decoder).listen(outBuf.write);
-    process.stderr.transform(SystemEncoding().decoder).listen(errBuf.write);
+    process.stdout.transform(const SystemEncoding().decoder).listen(outBuf.write);
+    process.stderr.transform(const SystemEncoding().decoder).listen(errBuf.write);
     final exit = await process.exitCode.timeout(timeout, onTimeout: () {
       process.kill(ProcessSignal.sigkill);
       return -1;

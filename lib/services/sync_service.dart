@@ -23,7 +23,13 @@ class SyncConfig {
   int? remotePort;
   String? identityFile;
 
-  SyncConfig({this.localPath, this.remoteUser, this.remoteHost, this.remotePath, this.remotePort, this.identityFile});
+  SyncConfig(
+      {this.localPath,
+      this.remoteUser,
+      this.remoteHost,
+      this.remotePath,
+      this.remotePort,
+      this.identityFile});
 
   bool get isComplete =>
       (localPath != null && localPath!.isNotEmpty) &&
@@ -39,7 +45,13 @@ class SyncService {
   final SyncConfig config = SyncConfig();
   final Map<String, DateTime> _lastSyncRecords = {};
 
-  void updateConfig({String? localPath, String? remoteUser, String? remoteHost, String? remotePath, int? remotePort, String? identityFile}) {
+  void updateConfig(
+      {String? localPath,
+      String? remoteUser,
+      String? remoteHost,
+      String? remotePath,
+      int? remotePort,
+      String? identityFile}) {
     if (localPath != null) config.localPath = localPath;
     if (remoteUser != null) config.remoteUser = remoteUser;
     if (remoteHost != null) config.remoteHost = remoteHost;
@@ -53,7 +65,8 @@ class SyncService {
   /// Returns a map with keys: 'user' and 'host' when detected.
   Map<String, String> parseSshCommand(String input) {
     // Tokenize by whitespace, preserving non-option tokens.
-    final tokens = input.trim().split(RegExp(r"\s+")).where((t) => t.isNotEmpty).toList();
+    final tokens =
+        input.trim().split(RegExp(r"\s+")).where((t) => t.isNotEmpty).toList();
     if (tokens.isEmpty || tokens.first != 'ssh') return {};
 
     // Scan tokens for a plausible host spec: the first non-option token after options
@@ -63,7 +76,13 @@ class SyncService {
       final t = tokens[i];
       if (t.startsWith('-')) {
         // Skip the following token if the option expects an argument and it's not in -oX=Y form
-        if (t == '-p' || t == '-i' || t == '-l' || t == '-b' || t == '-F' || t == '-J' || t == '-S') {
+        if (t == '-p' ||
+            t == '-i' ||
+            t == '-l' ||
+            t == '-b' ||
+            t == '-F' ||
+            t == '-J' ||
+            t == '-S') {
           i++; // skip next as arg if present
         }
         continue;
@@ -82,7 +101,9 @@ class SyncService {
       final parts = hostToken.split('@');
       if (parts.length >= 2) {
         user = parts[0];
-        host = parts.sublist(1).join('@'); // In case @ appears in some unusual alias
+        host = parts
+            .sublist(1)
+            .join('@'); // In case @ appears in some unusual alias
       } else {
         host = hostToken;
       }
@@ -101,7 +122,10 @@ class SyncService {
 
   Future<void> up() async {
     // Switch to internal sync pipeline: require local and remote paths only
-    if (config.localPath == null || config.localPath!.isEmpty || config.remotePath == null || config.remotePath!.isEmpty) {
+    if (config.localPath == null ||
+        config.localPath!.isEmpty ||
+        config.remotePath == null ||
+        config.remotePath!.isEmpty) {
       throw StateError('配置不完整：需要本地目录和目标目录');
     }
 
@@ -122,6 +146,17 @@ class SyncService {
     final differ = SimpleDiffer();
     final stager = SimpleStager(config.localPath!);
     final transport = LocalTransport();
+
+    // 修改前
+    // transport.subscribe((data) {
+    //   endpointBeta.apply(data);
+    // });
+
+    // 修改后
+    transport.subscribe((data) {
+      beta.apply(data);
+    });
+
     final statePath = p.join(config.localPath!, '.codebisync', 'baseline.json');
     final store = FileStateStore(statePath);
 
@@ -151,7 +186,8 @@ class SyncService {
     final host = config.remoteHost;
     final user = config.remoteUser;
     final basePath = config.remotePath;
-    if (host == null || user == null || basePath == null || basePath.isEmpty) return [];
+    if (host == null || user == null || basePath == null || basePath.isEmpty)
+      return [];
 
     String? keyPath = config.identityFile;
     String? proxyJump;
@@ -167,7 +203,8 @@ class SyncService {
         proxyJump = m.proxyJump;
         compression = m.compression;
         forwardAgent = m.forwardAgent;
-        if ((keyPath == null || keyPath.isEmpty) && m.identityFiles.isNotEmpty) {
+        if ((keyPath == null || keyPath.isEmpty) &&
+            m.identityFiles.isNotEmpty) {
           keyPath = m.identityFiles.first;
         }
       }
@@ -194,8 +231,13 @@ class SyncService {
           dirsOnly: false,
         );
         for (final e in items) {
-          final rel = current == basePath ? e.name : p.join(p.relative(current, from: basePath), e.name);
-          results.add(SyncEntry(name: rel, isDirectory: e.isDirectory, status: SyncStatus.pending));
+          final rel = current == basePath
+              ? e.name
+              : p.join(p.relative(current, from: basePath), e.name);
+          results.add(SyncEntry(
+              name: rel,
+              isDirectory: e.isDirectory,
+              status: SyncStatus.pending));
           if (e.isDirectory) {
             dirs.add(p.join(current, e.name));
           }
@@ -217,7 +259,8 @@ class SyncService {
       if (await d.exists()) {
         final localEntries = await listLocalEntries(config.localPath!);
         lines.add('源目录条目数: ${localEntries.length}');
-        final baseline = p.join(config.localPath!, '.codebisync', 'baseline.json');
+        final baseline =
+            p.join(config.localPath!, '.codebisync', 'baseline.json');
         lines.add('基线文件: ${File(baseline).existsSync() ? baseline : '不存在'}');
       }
     }
@@ -251,7 +294,10 @@ class SyncService {
       final aDir = a is Directory;
       final bDir = b is Directory;
       if (aDir != bDir) return aDir ? -1 : 1;
-      return p.basename(a.path).toLowerCase().compareTo(p.basename(b.path).toLowerCase());
+      return p
+          .basename(a.path)
+          .toLowerCase()
+          .compareTo(p.basename(b.path).toLowerCase());
     });
 
     return Future.wait(entities.map((entity) async {
