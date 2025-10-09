@@ -225,11 +225,28 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _onStatus() async {
-    final out = await _syncService.status();
+    final out = await _syncService.getStatus();
     if (!mounted) return;
     setState(() {
       _status = out;
     });
+
+    // 显示详细状态信息对话框
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('同步状态'),
+        content: SingleChildScrollView(
+          child: Text(out),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _onDiagnose() async {

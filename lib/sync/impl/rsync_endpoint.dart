@@ -7,6 +7,8 @@ import '../endpoint.dart';
 import '../snapshot.dart';
 import '../staging_models.dart';
 
+import '../../services/sync_status_manager.dart';
+
 class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   final String host;
   final String user;
@@ -14,6 +16,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   final String remoteRoot;
   final String? identityFile;
   final String localRoot;
+  final SyncStatusManager? statusManager; // 新增状态管理器
 
   static const int _maxIncrementalPaths = 2048;
   static final RegExp _rsyncListPattern = RegExp(
@@ -32,6 +35,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
     required this.localRoot,
     this.port = 22,
     this.identityFile,
+    this.statusManager,
   }) {
     _remoteRootCanonical = _normalizeRemote(remoteRoot);
     _localRootCanonical = Directory(localRoot).absolute.path;
@@ -155,15 +159,15 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
           if (change.metadata?.isDirectory == true) {
             await _ssh(['mkdir', '-p', _remotePath(rel)]);
             // 验证目录是否创建成功
-            if (!(await _verifyRemotePathExists(rel, isDirectory: true))) {
+            if (!(await verifyRemotePathExists(rel, isDirectory: true))) {
               throw Exception('Failed to create remote directory: $rel');
             }
           } else {
             await _ensureRemoteDir(rel);
             // 使用rsync传输文件
-            await _rsyncFile(rel);
+            await rsyncFile(rel);
             // 验证文件是否传输成功
-            if (!(await _verifyRemotePathExists(rel, isDirectory: false))) {
+            if (!(await verifyRemotePathExists(rel, isDirectory: false))) {
               throw Exception('Failed to sync file: $rel');
             }
           }
@@ -171,7 +175,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
         case ChangeType.delete:
           await _ssh(['rm', '-rf', _remotePath(rel)]);
           // 验证文件是否删除成功
-          if (await _verifyRemotePathExists(rel, isDirectory: null)) {
+          if (await verifyRemotePathExists(rel, isDirectory: null)) {
             throw Exception('Failed to delete remote path: $rel');
           }
           break;
@@ -182,16 +186,16 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
             await _ssh(['mkdir', '-p', _remotePath(_posix.dirname(rel))]);
             await _ssh(['mv', _remotePath(oldNorm), _remotePath(rel)]);
             // 验证重命名是否成功
-            if (!(await _verifyRemotePathExists(rel, isDirectory: null)) ||
-                await _verifyRemotePathExists(oldNorm, isDirectory: null)) {
+            if (!(await verifyRemotePathExists(rel, isDirectory: null)) ||
+                await verifyRemotePathExists(oldNorm, isDirectory: null)) {
               throw Exception(
                   'Failed to rename remote path from $oldNorm to $rel');
             }
           } else {
             await _ensureRemoteDir(rel);
-            await _rsyncFile(rel);
+            await rsyncFile(rel);
             // 验证文件是否传输成功
-            if (!(await _verifyRemotePathExists(rel, isDirectory: false))) {
+            if (!(await verifyRemotePathExists(rel, isDirectory: false))) {
               throw Exception('Failed to sync file: $rel');
             }
           }
@@ -203,8 +207,10 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   }
 
   // 验证远程路径是否存在
-  Future<bool> _verifyRemotePathExists(String relPath,
+  Future<bool> verifyRemotePathExists(String relPath,
       {bool? isDirectory}) async {
+    statusManager?.addEvent(SyncOperation.verifyRemote, relPath);
+
     final normPath = _normalizeRemoteRelative(relPath);
     final checkCmd = isDirectory != null
         ? ['test', '-${isDirectory ? 'd' : 'f'}', _remotePath(normPath)]
@@ -212,6 +218,11 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
 
     try {
       final result = await _ssh(checkCmd, throwOnError: false);
+
+      // 验证完成
+      statusManager?.addEvent(SyncOperation.verifyRemote, relPath,
+          isComplete: true);
+
       return result.exitCode == 0;
     } catch (_) {
       return false;
@@ -244,62 +255,85 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   }
 
   // 增强的rsync文件传输方法
-  Future<void> _rsyncFile(String relPath) async {
-    final src = _joinLocal(_localRootCanonical, relPath);
-    final destDir = _remotePath(_posix.dirname(relPath));
-    final userAtHost = '$user@$host';
-    final sshArgs = [
-      'ssh',
-      '-p',
-      port.toString(),
-      '-o',
-      'StrictHostKeyChecking=no',
-      '-o',
-      'UserKnownHostsFile=/dev/null',
-      '-o',
-      'BatchMode=yes',
-      if (identityFile != null && identityFile!.isNotEmpty) ...[
-        '-i',
-        identityFile!
-      ],
-    ];
+  Future<void> rsyncFile(String relPath) async {
+    statusManager?.addEvent(SyncOperation.uploadFile, relPath);
 
-    // 添加校验和比较和详细输出
-    final args = [
-      '-avz', // 添加压缩以提高传输效率
-      '--checksum', // 使用校验和比较文件，确保完全一致
-      '--progress', // 显示传输进度
-      '--chmod=ugo=rwX', // 确保适当的权限
-      '--times', // 保留修改时间
-      '-e', sshArgs.join(' '),
-      src,
-      '$userAtHost:${_quote(destDir)}/',
-    ];
-    final res = await Process.run('rsync', args);
-    if (res.exitCode != 0) {
-      throw ProcessException('rsync', args, res.stderr, res.exitCode);
+    try {
+      final src = _joinLocal(_localRootCanonical, relPath);
+      final destDir = _remotePath(_posix.dirname(relPath));
+      final userAtHost = '$user@$host';
+      final sshArgs = [
+        'ssh',
+        '-p',
+        port.toString(),
+        '-o',
+        'StrictHostKeyChecking=no',
+        '-o',
+        'UserKnownHostsFile=/dev/null',
+        '-o',
+        'BatchMode=yes',
+        if (identityFile != null && identityFile!.isNotEmpty) ...[
+          '-i',
+          identityFile!
+        ],
+      ];
+
+      // 添加校验和比较和详细输出
+      final args = <String>[
+        '-avz', // 添加压缩以提高传输效率
+        '--checksum', // 使用校验和比较文件，确保完全一致
+        '--progress', // 显示传输进度
+        '--chmod=ugo=rwX', // 确保适当的权限
+        '--times', // 保留修改时间
+        '-e', sshArgs.join(' '),
+        src,
+        '$userAtHost:${_quote(destDir)}/',
+      ];
+      final res = await Process.run('rsync', args);
+      if (res.exitCode != 0) {
+        throw ProcessException('rsync', args, res.stderr, res.exitCode);
+      }
+
+      // 上传完成
+      statusManager?.addEvent(SyncOperation.uploadFile, relPath,
+          isComplete: true);
+    } catch (e) {
+      // 可以在这里添加失败状态记录
+      rethrow;
     }
   }
 
+  // 修改pull方法以记录下载状态
   @override
   Future<void> pull(String relPath) async {
-    final rel = _normalizeRemoteRelative(relPath);
-    final src = '${_userAtHost()}:${_quote(_remotePath(rel))}';
-    final destDir =
-        Directory(_joinLocal(_localRootCanonical, _posix.dirname(rel)));
-    await destDir.create(recursive: true);
+    statusManager?.addEvent(SyncOperation.downloadFile, relPath);
 
-    final args = [
-      '-av',
-      '-e',
-      _sshCommandString(),
-      src,
-      '${_joinLocal(_localRootCanonical, _posix.dirname(rel))}/',
-    ];
+    try {
+      final rel = _normalizeRemoteRelative(relPath);
+      final src = '${_userAtHost()}:${_quote(_remotePath(rel))}';
+      final destDir =
+          Directory(_joinLocal(_localRootCanonical, _posix.dirname(rel)));
+      await destDir.create(recursive: true);
 
-    final result = await Process.run('rsync', args);
-    if (result.exitCode != 0) {
-      throw ProcessException('rsync', args, result.stderr, result.exitCode);
+      final args = [
+        '-av',
+        '-e',
+        _sshCommandString(),
+        src,
+        '${_joinLocal(_localRootCanonical, _posix.dirname(rel))}/',
+      ];
+
+      final result = await Process.run('rsync', args);
+      if (result.exitCode != 0) {
+        throw ProcessException('rsync', args, result.stderr, result.exitCode);
+      }
+
+      // 下载完成
+      statusManager?.addEvent(SyncOperation.downloadFile, relPath,
+          isComplete: true);
+    } catch (e) {
+      // 可以在这里添加失败状态记录
+      rethrow;
     }
   }
 
@@ -492,34 +526,6 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
     await _ssh(['mkdir', '-p', _remotePath(dir)]);
   }
 
-  Future<void> _rsyncFile(String relPath) async {
-    final localFile = _joinLocal(_localRootCanonical, relPath);
-    final destDir = _remotePath(_posix.dirname(relPath));
-    final args = [
-      '-av',
-      '-e',
-      _sshCommandString(),
-      localFile,
-      '${_userAtHost()}:${_quote(_ensureTrailingSlash(destDir))}',
-    ];
-    final result = await Process.run('rsync', args);
-    if (result.exitCode != 0) {
-      throw ProcessException('rsync', args, result.stderr, result.exitCode);
-    }
-  }
-
-  Future<void> _ssh(List<String> cmdArgs) async {
-    final args = <String>[
-      ..._sshCommandArgs(),
-      '$user@$host',
-      ...cmdArgs,
-    ];
-    final result = await Process.run('ssh', args);
-    if (result.exitCode != 0) {
-      throw ProcessException('ssh', args, result.stderr, result.exitCode);
-    }
-  }
-
   List<String> _sshCommandArgs() {
     return <String>[
       '-p',
@@ -562,7 +568,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
       value = value.substring(2);
     }
     value = value.replaceAll('\\', '/');
-    value = value.replaceAll(RegExp(r'/+'), '/');
+    value = value.replaceAll(RegExp(r'/'), '/');
     if (value == '.' || value == '/') {
       return '';
     }

@@ -14,6 +14,7 @@ import '../sync/session.dart';
 import '../sync/sync_controller.dart';
 import '../services/rsync_service.dart';
 import '../services/ssh_config.dart';
+import 'sync_status_manager.dart';
 
 class SyncConfig {
   String? localPath;
@@ -38,88 +39,37 @@ class SyncConfig {
       (remotePath != null && remotePath!.isNotEmpty);
 }
 
+// 删除重复的导入行
+// import 'sync_status_manager.dart';
+
 class SyncService {
   // Keep a single session name for now; could be made configurable.
   static const String _sessionName = 'codebisync';
 
   final SyncConfig config = SyncConfig();
   final Map<String, DateTime> _lastSyncRecords = {};
-
-  void updateConfig(
-      {String? localPath,
-      String? remoteUser,
-      String? remoteHost,
-      String? remotePath,
-      int? remotePort,
-      String? identityFile}) {
-    if (localPath != null) config.localPath = localPath;
-    if (remoteUser != null) config.remoteUser = remoteUser;
-    if (remoteHost != null) config.remoteHost = remoteHost;
-    if (remotePath != null) config.remotePath = remotePath;
-    if (remotePort != null) config.remotePort = remotePort;
-    if (identityFile != null) config.identityFile = identityFile;
-  }
-
-  /// Parse an ssh command string to extract `[user]` and `host`.
-  /// Examples supported: `ssh host`, `ssh user@host`, with arbitrary options like `-p 2222 -C`.
-  /// Returns a map with keys: 'user' and 'host' when detected.
-  Map<String, String> parseSshCommand(String input) {
-    // Tokenize by whitespace, preserving non-option tokens.
-    final tokens =
-        input.trim().split(RegExp(r"\s+")).where((t) => t.isNotEmpty).toList();
-    if (tokens.isEmpty || tokens.first != 'ssh') return {};
-
-    // Scan tokens for a plausible host spec: the first non-option token after options
-    // Options may be forms like: -p 22, -i key, -o Option=value
-    String? hostToken;
-    for (int i = 1; i < tokens.length; i++) {
-      final t = tokens[i];
-      if (t.startsWith('-')) {
-        // Skip the following token if the option expects an argument and it's not in -oX=Y form
-        if (t == '-p' ||
-            t == '-i' ||
-            t == '-l' ||
-            t == '-b' ||
-            t == '-F' ||
-            t == '-J' ||
-            t == '-S') {
-          i++; // skip next as arg if present
-        }
-        continue;
-      }
-      hostToken = t;
-      break;
-    }
-
-    if (hostToken == null || hostToken.isEmpty) return {};
-
-    // Strip any trailing command (in rare forms like: ssh host command) — we only take the first host token
-    // Parse user@host if present, else just host.
-    String? user;
-    String host;
-    if (hostToken.contains('@')) {
-      final parts = hostToken.split('@');
-      if (parts.length >= 2) {
-        user = parts[0];
-        host = parts
-            .sublist(1)
-            .join('@'); // In case @ appears in some unusual alias
-      } else {
-        host = hostToken;
-      }
-    } else {
-      host = hostToken;
-    }
-
-    final out = <String, String>{};
-    if (user != null && user.isNotEmpty) out['user'] = user;
-    if (host.isNotEmpty) out['host'] = host;
-    return out;
-  }
-
+  final SyncStatusManager _statusManager = SyncStatusManager();
   final SyncController _controller = SyncController();
   bool _sessionRunning = false;
 
+  // 添加获取状态管理器的方法
+  SyncStatusManager get statusManager => _statusManager;
+
+  // 修改status方法以返回详细状态
+  Future<String> getStatus() async {
+    if (_sessionRunning && _controller.hasSession(_sessionName)) {
+      final statusEvents = _statusManager.getCurrentStatus();
+      if (statusEvents.isEmpty) {
+        return 'Session running (Alpha→Beta). 源: ${config.localPath}\n目标: ${config.remotePath}';
+      } else {
+        final messages = statusEvents.map((e) => e.formattedMessage).join('\n');
+        return '当前同步状态:\n$messages';
+      }
+    }
+    return 'No active session';
+  }
+
+  // 在up方法中添加初始状态
   Future<void> up() async {
     // Switch to internal sync pipeline: require local and remote paths only
     if (config.localPath == null ||
@@ -137,6 +87,7 @@ class SyncService {
       localRoot: config.localPath!,
       port: config.remotePort ?? 22,
       identityFile: config.identityFile,
+      statusManager: _statusManager, // 传递状态管理器
     );
     final watcher = FsWatcher(
       root: config.localPath!,
@@ -168,18 +119,12 @@ class SyncService {
       stager: stager,
       transport: transport,
       stateStore: store,
+      statusManager: _statusManager,
     );
 
     await _controller.createSession(sessionId: _sessionName, session: session);
     _sessionRunning = true;
     _recordDirectorySync(config.localPath!);
-  }
-
-  Future<String> status() async {
-    if (_sessionRunning && _controller.hasSession(_sessionName)) {
-      return 'Session running (Alpha→Beta). 源: ${config.localPath}\n目标: ${config.remotePath}';
-    }
-    return 'No active session';
   }
 
   Future<List<SyncEntry>> listRemoteEntries() async {
@@ -365,12 +310,17 @@ class SyncService {
       );
 
       // 使用rsync的dry-run模式检查文件是否相同
-      final args = [
+      final sshCmd =
+          'ssh -p ${config.remotePort ?? 22} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes${config.identityFile != null ? ' -i ${config.identityFile}' : ''}';
+      final remotePath = '${config.remotePath ?? ''}/$relativePath'
+          .replaceAll(RegExp(r'//+'), '/');
+
+      final args = <String>[
         '-avn', // n表示dry-run
         '--checksum', // 使用校验和比较
-        '-e', endpoint._sshCommandString(), // 注意：这需要将_sshCommandString方法改为公开
+        '-e', sshCmd,
         p.join(config.localPath!, relativePath),
-        '${config.remoteUser}@${config.remoteHost}:${endpoint._remotePath(relativePath)}',
+        '${config.remoteUser ?? ''}@${config.remoteHost ?? ''}:$remotePath',
       ];
 
       final result = await Process.run('rsync', args);
@@ -380,5 +330,63 @@ class SyncService {
     } catch (_) {
       return false;
     }
+  }
+
+  // 添加updateConfig方法
+  void updateConfig({
+    String? localPath,
+    String? remoteUser,
+    String? remoteHost,
+    String? remotePath,
+    int? remotePort,
+    String? identityFile,
+  }) {
+    if (localPath != null) {
+      config.localPath = localPath;
+    }
+    if (remoteUser != null) {
+      config.remoteUser = remoteUser;
+    }
+    if (remoteHost != null) {
+      config.remoteHost = remoteHost;
+    }
+    if (remotePath != null) {
+      config.remotePath = remotePath;
+    }
+    if (remotePort != null) {
+      config.remotePort = remotePort;
+    }
+    if (identityFile != null) {
+      config.identityFile = identityFile;
+    }
+  }
+
+  // 添加parseSshCommand方法
+  Map<String, String> parseSshCommand(String cmd) {
+    final result = <String, String>{};
+    final parts = cmd.trim().split(' ');
+
+    // 简单解析SSH命令，提取用户名和主机名
+    for (var i = 0; i < parts.length; i++) {
+      final part = parts[i];
+      if (part.startsWith('-p')) {
+        // 提取端口
+        final port = part.substring(2).isNotEmpty
+            ? part.substring(2)
+            : (i + 1 < parts.length ? parts[i + 1] : null);
+        if (port != null) {
+          result['port'] = port;
+        }
+      } else if (part.contains('@') && !part.startsWith('-')) {
+        // 提取用户名和主机名
+        final userHost = part.split('@');
+        if (userHost.length == 2) {
+          result['user'] = userHost[0];
+          result['host'] = userHost[1];
+        }
+      }
+    }
+
+    return result;
   }
 }

@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
 
 import 'endpoint.dart';
 import 'watcher.dart';
@@ -7,6 +10,9 @@ import 'differ.dart';
 import 'stager.dart';
 import 'transport.dart';
 import 'state_store.dart';
+import '../sync/impl/rsync_endpoint.dart'; // 添加RsyncEndpoint导入
+import '../sync/impl/local_endpoint.dart'; // 添加LocalEndpoint导入
+import '../services/sync_status_manager.dart'; // 添加状态管理器导入
 
 class Session {
   final Endpoint endpointAlpha;
@@ -16,6 +22,7 @@ class Session {
   final Stager stager;
   final Transport transport;
   final StateStore stateStore;
+  final SyncStatusManager statusManager; // 添加状态管理器
 
   bool _canceled = false;
   Snapshot? _alphaSnapshot;
@@ -29,6 +36,7 @@ class Session {
     required this.stager,
     required this.transport,
     required this.stateStore,
+    required this.statusManager, // 添加到构造函数
   });
 
   void cancel() {
@@ -40,18 +48,24 @@ class Session {
     var firstIteration = true;
 
     while (!_canceled) {
+      statusManager.addEvent(SyncOperation.detectChanges, '等待文件变更');
+
       WatchEventBatch batch;
       RemoteChangeBatch remoteChanges;
       if (firstIteration) {
         batch = WatchEventBatch.fullRescan();
         remoteChanges = RemoteChangeBatch.fullRescan();
         firstIteration = false;
+        statusManager.addEvent(SyncOperation.scanFiles, '首次扫描文件系统');
       } else {
         await watcher.waitForChangeOrTimeout();
         batch = watcher.drainChanges();
+        statusManager.addEvent(SyncOperation.detectChanges, '检测本地变更');
+
         remoteChanges = await _collectRemoteChanges(
           force: batch.requiresFullRescan || _betaSnapshot == null,
         );
+
         if (!batch.requiresFullRescan &&
             batch.paths.isEmpty &&
             !remoteChanges.requiresFullRescan &&
@@ -81,16 +95,22 @@ class Session {
       Snapshot base = baseAlpha ?? Snapshot({});
 
       // 差异 & 合并
+      statusManager.addEvent(SyncOperation.detectChanges, '分析文件差异');
       SyncPlan plan = differ.reconcile(base, alphaSnap, betaSnap);
+      statusManager.addEvent(SyncOperation.detectChanges, '分析文件差异',
+          isComplete: true);
 
       final baselineMissing = baseAlpha == null || baseBeta == null;
 
       if (plan.hasChanges) {
+        statusManager.addEvent(SyncOperation.scanFiles, '准备同步变更');
         final betaVerification = <String>{};
         final alphaAdjustments = <String>{};
 
         // Alpha → Beta
         if (plan.alphaToBeta.isNotEmpty) {
+          statusManager.addEvent(SyncOperation.uploadFile, '开始上传文件到远程');
+
           final a2b = SyncPlan(
             alphaToBeta: plan.alphaToBeta,
             betaToAlpha: const [],
@@ -105,29 +125,69 @@ class Session {
             if (ch.type == ChangeType.rename && ch.oldPath != null) {
               betaVerification.add(ch.oldPath!);
             }
+
+            // 记录每个文件的上传状态
+            switch (ch.type) {
+              case ChangeType.create:
+              case ChangeType.modify:
+                statusManager.addEvent(SyncOperation.uploadFile, ch.path,
+                    isComplete: true);
+                break;
+              case ChangeType.delete:
+                statusManager.addEvent(SyncOperation.deletePath, ch.path,
+                    isComplete: true);
+                break;
+              case ChangeType.rename:
+                if (ch.oldPath != null) {
+                  statusManager.addEvent(
+                      SyncOperation.renamePath, '${ch.oldPath} → ${ch.path}',
+                      isComplete: true);
+                }
+                break;
+              default:
+                break;
+            }
           }
+
+          statusManager.addEvent(SyncOperation.uploadFile, '文件上传完成',
+              isComplete: true);
         }
 
         // Beta → Alpha（仅当 Beta 是 RsyncEndpoint 时，拉取文件到本地）
         if (plan.betaToAlpha.isNotEmpty) {
+          statusManager.addEvent(SyncOperation.downloadFile, '开始从远程下载文件');
+
           for (final ch in plan.betaToAlpha) {
             switch (ch.type) {
               case ChangeType.create:
               case ChangeType.modify:
                 if (endpointBeta is PullableEndpoint) {
                   try {
+                    statusManager.addEvent(SyncOperation.downloadFile, ch.path);
                     await (endpointBeta as PullableEndpoint).pull(ch.path);
-                  } catch (_) {}
+                    statusManager.addEvent(SyncOperation.downloadFile, ch.path,
+                        isComplete: true);
+                  } catch (_) {
+                    // 可以在这里添加错误处理
+                  }
                 }
                 alphaAdjustments.add(ch.path);
                 break;
               case ChangeType.delete:
+                statusManager.addEvent(SyncOperation.deletePath, ch.path);
                 await endpointAlpha.delete(ch.path);
+                statusManager.addEvent(SyncOperation.deletePath, ch.path,
+                    isComplete: true);
                 alphaAdjustments.add(ch.path);
                 break;
               case ChangeType.rename:
                 if (ch.oldPath != null) {
+                  statusManager.addEvent(
+                      SyncOperation.renamePath, '${ch.oldPath} → ${ch.path}');
                   await endpointAlpha.rename(ch.oldPath!, ch.path);
+                  statusManager.addEvent(
+                      SyncOperation.renamePath, '${ch.oldPath} → ${ch.path}',
+                      isComplete: true);
                   alphaAdjustments.add(ch.path);
                   alphaAdjustments.add(ch.oldPath!);
                 }
@@ -136,6 +196,9 @@ class Session {
                 break;
             }
           }
+
+          statusManager.addEvent(SyncOperation.downloadFile, '文件下载完成',
+              isComplete: true);
         }
 
         // TODO: 可将 conflicts 上报给 UI 或记录日志
@@ -152,6 +215,7 @@ class Session {
       if ((plan.hasChanges || baselineMissing) &&
           _alphaSnapshot != null &&
           _betaSnapshot != null) {
+        statusManager.addEvent(SyncOperation.scanFiles, '保存同步基线');
         await stateStore.saveNewBaseline(
           _alphaSnapshot!,
           _betaSnapshot!,
@@ -164,7 +228,11 @@ class Session {
   Future<Snapshot?> _scanAlpha(WatchEventBatch batch) async {
     try {
       if (_alphaSnapshot == null || batch.requiresFullRescan) {
-        return await endpointAlpha.scan();
+        statusManager.addEvent(SyncOperation.scanFiles, '扫描本地文件系统');
+        final result = await endpointAlpha.scan();
+        statusManager.addEvent(SyncOperation.scanFiles, '本地文件扫描完成',
+            isComplete: true);
+        return result;
       }
 
       if (batch.paths.isEmpty) {
@@ -173,14 +241,24 @@ class Session {
 
       if (endpointAlpha is IncrementalEndpoint) {
         final inc = endpointAlpha as IncrementalEndpoint;
-        return await inc.refreshSnapshot(
+        statusManager.addEvent(SyncOperation.scanFiles, '增量扫描本地变更');
+        final result = await inc.refreshSnapshot(
           previous: _alphaSnapshot!,
           relativePaths: batch.paths,
         );
+        statusManager.addEvent(SyncOperation.scanFiles, '本地变更扫描完成',
+            isComplete: true);
+        return result;
       }
 
-      return await endpointAlpha.scan();
+      statusManager.addEvent(SyncOperation.scanFiles, '重新扫描本地文件系统');
+      final result = await endpointAlpha.scan();
+      statusManager.addEvent(SyncOperation.scanFiles, '本地文件扫描完成',
+          isComplete: true);
+      return result;
     } catch (_) {
+      statusManager.addEvent(SyncOperation.scanFiles, '本地文件扫描失败',
+          isComplete: true);
       return null;
     }
   }
@@ -188,12 +266,18 @@ class Session {
   Future<RemoteChangeBatch> _collectRemoteChanges({required bool force}) async {
     if (endpointBeta is RemoteIncrementalEndpoint) {
       try {
-        return await (endpointBeta as RemoteIncrementalEndpoint)
+        statusManager.addEvent(SyncOperation.detectChanges, '检测远程文件变更');
+        final result = await (endpointBeta as RemoteIncrementalEndpoint)
             .detectRemoteChanges(
           previous: _betaSnapshot,
           forceFull: force,
         );
+        statusManager.addEvent(SyncOperation.detectChanges, '远程变更检测完成',
+            isComplete: true);
+        return result;
       } catch (_) {
+        statusManager.addEvent(SyncOperation.detectChanges, '远程变更检测失败',
+            isComplete: true);
         return RemoteChangeBatch.fullRescan();
       }
     }
@@ -203,8 +287,11 @@ class Session {
   Future<Snapshot?> _refreshBetaSnapshot(RemoteChangeBatch changes) async {
     try {
       if (_betaSnapshot == null || changes.requiresFullRescan) {
+        statusManager.addEvent(SyncOperation.scanFiles, '扫描远程文件系统');
         final snap = await endpointBeta.scan();
         _betaSnapshot = snap;
+        statusManager.addEvent(SyncOperation.scanFiles, '远程文件扫描完成',
+            isComplete: true);
         return snap;
       }
 
@@ -214,24 +301,33 @@ class Session {
 
       if (endpointBeta is IncrementalEndpoint) {
         final inc = endpointBeta as IncrementalEndpoint;
+        statusManager.addEvent(SyncOperation.scanFiles, '增量扫描远程变更');
         final snap = await inc.refreshSnapshot(
           previous: _betaSnapshot!,
           relativePaths: changes.paths,
         );
         _betaSnapshot = snap;
+        statusManager.addEvent(SyncOperation.scanFiles, '远程变更扫描完成',
+            isComplete: true);
         return snap;
       }
 
+      statusManager.addEvent(SyncOperation.scanFiles, '重新扫描远程文件系统');
       final snap = await endpointBeta.scan();
       _betaSnapshot = snap;
+      statusManager.addEvent(SyncOperation.scanFiles, '远程文件扫描完成',
+          isComplete: true);
       return snap;
     } catch (_) {
+      statusManager.addEvent(SyncOperation.scanFiles, '远程文件扫描失败',
+          isComplete: true);
       return null;
     }
   }
 
   Future<void> _verifyRemotePaths(Set<String> paths) async {
     if (_betaSnapshot == null) {
+      statusManager.addEvent(SyncOperation.verifyRemote, '准备验证远程路径');
       _betaSnapshot = await endpointBeta.scan();
       return;
     }
@@ -239,14 +335,23 @@ class Session {
     // 对于RsyncEndpoint，进行更严格的验证
     if (endpointBeta is RsyncEndpoint) {
       final rsyncEndpoint = endpointBeta as RsyncEndpoint;
+      statusManager.addEvent(SyncOperation.verifyRemote, '验证远程文件完整性');
+
       for (final path in paths) {
         try {
-          // 验证文件是否存在且内容一致
-          final exists = await rsyncEndpoint._verifyRemotePathExists(path,
+          // 验证文件是否存在
+          statusManager.addEvent(SyncOperation.verifyFile, path);
+          final exists = await rsyncEndpoint.verifyRemotePathExists(path,
               isDirectory: null);
+
           if (!exists) {
+            statusManager.addEvent(SyncOperation.verifyFile, '验证失败: $path',
+                isComplete: true);
             throw Exception('Remote path not found after sync: $path');
           }
+
+          statusManager.addEvent(SyncOperation.verifyFile, path,
+              isComplete: true);
 
           // 可以在这里添加额外的内容验证逻辑
           // 例如，使用rsync --checksum进行校验和比较
@@ -258,19 +363,30 @@ class Session {
             final localFilePath = p.join(localEndpoint.root, path);
             if (File(localFilePath).existsSync()) {
               try {
-                await rsyncEndpoint._rsyncFile(path);
+                statusManager.addEvent(SyncOperation.uploadFile, '重新上传: $path');
+                await rsyncEndpoint.rsyncFile(path);
+                statusManager.addEvent(
+                    SyncOperation.uploadFile, '重新上传成功: $path',
+                    isComplete: true);
               } catch (retryError) {
+                statusManager.addEvent(
+                    SyncOperation.uploadFile, '重新上传失败: $path',
+                    isComplete: true);
                 print('Retry sync failed for $path: $retryError');
               }
             }
           }
         }
       }
+
+      statusManager.addEvent(SyncOperation.verifyRemote, '远程文件验证完成',
+          isComplete: true);
     }
 
     // 刷新远程快照
     if (endpointBeta is IncrementalEndpoint) {
       try {
+        statusManager.addEvent(SyncOperation.scanFiles, '刷新远程快照');
         _betaSnapshot =
             await (endpointBeta as IncrementalEndpoint).refreshSnapshot(
           previous: _betaSnapshot!,
@@ -286,6 +402,7 @@ class Session {
 
   Future<void> _refreshAlphaSnapshot(Set<String> paths) async {
     if (_alphaSnapshot == null || paths.isEmpty) return;
+    statusManager.addEvent(SyncOperation.scanFiles, '刷新本地快照');
     if (endpointAlpha is IncrementalEndpoint) {
       try {
         _alphaSnapshot =
@@ -293,9 +410,13 @@ class Session {
           previous: _alphaSnapshot!,
           relativePaths: paths,
         );
+        statusManager.addEvent(SyncOperation.scanFiles, '本地快照刷新完成',
+            isComplete: true);
         return;
       } catch (_) {}
     }
     _alphaSnapshot = await endpointAlpha.scan();
+    statusManager.addEvent(SyncOperation.scanFiles, '本地快照刷新完成',
+        isComplete: true);
   }
 }
