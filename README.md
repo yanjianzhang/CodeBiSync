@@ -52,7 +52,7 @@ flutter run -d macos   # 或按需启用你的桌面目标
 - 已实现最小可用的双向同步闭环；冲突处理与 UI 提示将持续完善。
 - 远程全量扫描/增量监听优化中；当前远程浏览主要依赖 `rsync --list-only`。
 - Windows/Linux 桌面目标可通过 `flutter config --enable-windows-desktop` / `--enable-linux-desktop` 启用后生成工程。
-- 后续将移除遗留的 Mutagen 探测逻辑，统一到 ssh/rsync 路径与提示。
+- 已移除遗留的 Mutagen 探测逻辑，统一到 ssh/rsync 路径与提示。
 
 ## 免责声明
 
