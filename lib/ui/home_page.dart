@@ -8,6 +8,7 @@ import '../services/connection_daemon.dart';
 import 'remote_browser.dart';
 import '../services/ssh_config.dart';
 import '../services/sync_status_manager.dart';
+import '../utils/time_formatter.dart';
 
 // 添加一个映射来跟踪目录同步状态
 class HomePage extends StatefulWidget {
@@ -63,11 +64,12 @@ class _HomePageState extends State<HomePage> {
         );
         
         if (successEvents.isNotEmpty) {
-          // 同步成功
-          _updateDirectoryStatus('✅');
+          // 同步成功，显示同步时间
+          final now = DateTime.now();
+          _updateDirectoryStatus(TimeFormatter.formatTimeAgo(now));
         } else {
           // 同步失败
-          _updateDirectoryStatus('❌');
+          _updateDirectoryStatus('同步失败');
         }
       }
       
@@ -87,7 +89,8 @@ class _HomePageState extends State<HomePage> {
   void _initializeDirectoryStatus() {
     // 在下一帧更新UI状态
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _updateDirectoryStatus('✅');
+      final now = DateTime.now();
+      _updateDirectoryStatus(TimeFormatter.formatTimeAgo(now));
     });
   }
 
@@ -265,7 +268,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _status = 'Starting up...';
       // 重置目录状态
-      _updateDirectoryStatus('🕙');
+      _updateDirectoryStatus('同步中...');
     });
 
     try {
@@ -292,18 +295,18 @@ class _HomePageState extends State<HomePage> {
   }
   
   // 添加方法来更新目录状态显示
-  void _updateDirectoryStatus(String statusEmoji) {
+  void _updateDirectoryStatus(String statusText) {
     final localPath = _localDirCtrl.text.trim();
     if (localPath.isNotEmpty) {
       setState(() {
-        _directoryStatus[localPath] = statusEmoji;
+        _directoryStatus[localPath] = statusText;
       });
     }
   }
   
   // 获取目录状态显示的辅助方法
   String _getDirectoryStatus(String path) {
-    return _directoryStatus[path] ?? '✅'; // 默认显示✅而不是otime
+    return _directoryStatus[path] ?? '已同步'; // 默认显示已同步
   }
 
   Future<void> _onStatus() async {
@@ -387,7 +390,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _onPull() async {
     setState(() {
       _status = '正在从远程拉取...';
-      _updateDirectoryStatus('otime');
+      _updateDirectoryStatus('同步中...');
     });
 
     try {
@@ -418,7 +421,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _onPush() async {
     setState(() {
       _status = '正在向远程推送...';
-      _updateDirectoryStatus('otime');
+      _updateDirectoryStatus('同步中...');
     });
 
     try {
@@ -1202,33 +1205,76 @@ class _DirectoryListTile extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            _glyph(entry.status, entry.modifiedAt, entry.lastSyncAt),
-            style: const TextStyle(fontSize: 16),
+            TimeFormatter.formatSyncStatus(
+              entry.status, 
+              entry.modifiedAt, 
+              entry.lastSyncAt
+            ),
+            style: const TextStyle(fontSize: 14),
           ),
         ],
       ),
     );
   }
+}
 
-  // 根据同步状态和时间返回对应的emoji图标
-  // ✅ 表示已同步，❌ 表示同步失败，🕙 表示等待/处理中
-  String _glyph(SyncStatus status, DateTime? modifiedAt, DateTime? lastSyncAt) {
-    // 如果修改时间和上次同步时间相同，则认为已同步
-    if (modifiedAt != null && lastSyncAt != null && modifiedAt.isAtSameMomentAs(lastSyncAt)) {
-      return '✅'; // 已同步
-    }
-    
-    switch (status) {
-      case SyncStatus.synced:
-        return '✅'; // 同步成功
-      case SyncStatus.failed:
-        return '❌'; // 同步失败
-      case SyncStatus.pending:
-      default:
-        return '🕙'; // 等待同步或未知状态
-    }
+// 将_DirectoryListTile改为public，以便在测试中使用
+class DirectoryListTile extends StatelessWidget {
+  const DirectoryListTile({required this.entry, super.key});
+
+  final SyncEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final iconData = entry.isDirectory ? Icons.folder : Icons.description;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Icon(iconData, size: 18, color: colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.name,
+              style: Theme.of(context).textTheme.bodyMedium,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            TimeFormatter.formatSyncStatus(
+              entry.status, 
+              entry.modifiedAt, 
+              entry.lastSyncAt
+            ),
+            style: const TextStyle(fontSize: 14),
+          ),
+        ],
+      ),
+    );
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
