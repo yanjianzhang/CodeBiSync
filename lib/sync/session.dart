@@ -50,7 +50,7 @@ class Session {
     while (!_canceled) {
       statusManager.addEvent(SyncOperation.detectChanges, '等待文件变更');
 
-      WatchEventBatch batch;
+WatchEventBatch batch;
       RemoteChangeBatch remoteChanges;
       if (firstIteration) {
         batch = WatchEventBatch.fullRescan();
@@ -327,7 +327,7 @@ class Session {
 
   Future<void> _verifyRemotePaths(Set<String> paths) async {
     if (_betaSnapshot == null) {
-      statusManager.addEvent(SyncOperation.verifyRemote, '准备验证远程路径');
+      statusManager.addEvent(SyncOperation.scanFiles, '准备验证远程路径');
       _betaSnapshot = await endpointBeta.scan();
       return;
     }
@@ -338,20 +338,44 @@ class Session {
       statusManager.addEvent(SyncOperation.verifyRemote, '验证远程文件完整性');
 
       for (final path in paths) {
+        // 跳过baseline.json文件的验证，因为它由系统自动管理
+        if (path.contains('.codebisync/baseline.json')) {
+          continue;
+        }
+        
+        // 检查文件是否在排除规则中
+        bool isExcluded = false;
+        for (final exclude in rsyncEndpoint.excludes) {
+          // 简单的匹配检查（实际项目中可能需要更复杂的模式匹配）
+          if (path.contains(exclude) || 
+              (exclude.startsWith('*') && path.endsWith(exclude.substring(1))) ||
+              (exclude.endsWith('/') && path.startsWith(exclude))) {
+            isExcluded = true;
+            break;
+          }
+        }
+        
+        // 如果文件在排除列表中，则跳过验证
+        if (isExcluded) {
+          statusManager.addEvent(SyncOperation.verifyFile, '跳过验证(已排除): $path',
+              isComplete: true, filePath: path);
+          continue;
+        }
+
         try {
           // 验证文件是否存在
-          statusManager.addEvent(SyncOperation.verifyFile, path);
+          statusManager.addEvent(SyncOperation.verifyFile, path, filePath: path);
           final exists = await rsyncEndpoint.verifyRemotePathExists(path,
               isDirectory: null);
 
           if (!exists) {
             statusManager.addEvent(SyncOperation.verifyFile, '验证失败: $path',
-                isComplete: true);
+                isComplete: true, filePath: path);
             throw Exception('Remote path not found after sync: $path');
           }
 
           statusManager.addEvent(SyncOperation.verifyFile, path,
-              isComplete: true);
+              isComplete: true, filePath: path);
 
           // 可以在这里添加额外的内容验证逻辑
           // 例如，使用rsync --checksum进行校验和比较
@@ -363,15 +387,15 @@ class Session {
             final localFilePath = p.join(localEndpoint.root, path);
             if (File(localFilePath).existsSync()) {
               try {
-                statusManager.addEvent(SyncOperation.uploadFile, '重新上传: $path');
+                statusManager.addEvent(SyncOperation.uploadFile, '重新上传: $path', filePath: path);
                 await rsyncEndpoint.rsyncFile(path);
                 statusManager.addEvent(
                     SyncOperation.uploadFile, '重新上传成功: $path',
-                    isComplete: true);
+                    isComplete: true, filePath: path);
               } catch (retryError) {
                 statusManager.addEvent(
                     SyncOperation.uploadFile, '重新上传失败: $path',
-                    isComplete: true);
+                    isComplete: true, filePath: path);
                 print('Retry sync failed for $path: $retryError');
               }
             }
@@ -418,5 +442,115 @@ class Session {
     _alphaSnapshot = await endpointAlpha.scan();
     statusManager.addEvent(SyncOperation.scanFiles, '本地快照刷新完成',
         isComplete: true);
+  }
+
+  Future<SyncPlan> detectChanges() async {
+    statusManager.addEvent(SyncOperation.detectChanges, '检测文件变更');
+    
+    try {
+      final baseAlpha = stateStore.loadBaselineAlpha();
+      final baseBeta = stateStore.loadBaselineBeta();
+
+      _alphaSnapshot = await endpointAlpha.scan();
+      _betaSnapshot = await endpointBeta.scan();
+
+      // 过滤掉.codebisync目录
+      if (baseAlpha != null) {
+        baseAlpha.entries.removeWhere((key, _) => key.contains('.codebisync'));
+      }
+      
+      if (baseBeta != null) {
+        baseBeta.entries.removeWhere((key, _) => key.contains('.codebisync'));
+      }
+      
+      _alphaSnapshot?.entries.removeWhere((key, _) => key.contains('.codebisync'));
+      _betaSnapshot?.entries.removeWhere((key, _) => key.contains('.codebisync'));
+
+      final plan = differ.reconcile(
+        baseAlpha ?? Snapshot({}),
+        _alphaSnapshot ?? Snapshot({}),
+        _betaSnapshot ?? Snapshot({}),
+      );
+      
+      statusManager.addEvent(SyncOperation.detectChanges, '变更检测完成', isComplete: true);
+      return plan;
+    } catch (e) {
+      statusManager.addEvent(SyncOperation.detectChanges, '变更检测失败: $e', isComplete: true);
+      rethrow;
+    }
+  }
+
+  Future<void> syncAll() async {
+    statusManager.addEvent(SyncOperation.detectChanges, '开始检测变更');
+    
+    try {
+      final changes = await detectChanges();
+      if (changes.alphaToBeta.isEmpty && changes.betaToAlpha.isEmpty) {
+        statusManager.addEvent(SyncOperation.detectChanges, '未检测到变更', isComplete: true);
+        return;
+      }
+
+      final alphaToBeta = changes.alphaToBeta
+          .where((c) => !c.path.contains('.codebisync')) // 过滤掉.codebisync目录
+          .toList();
+      final betaToAlpha = changes.betaToAlpha
+          .where((c) => !c.path.contains('.codebisync')) // 过滤掉.codebisync目录
+          .toList();
+
+      final staging = await _stage(alphaToBeta, betaToAlpha);
+      if (staging.metadataChanges.isEmpty && staging.dataChunks.isEmpty) {
+        statusManager.addEvent(SyncOperation.detectChanges, '没有需要同步的文件', isComplete: true);
+        return;
+      }
+
+      await _transportAll(staging);
+      await stateStore.saveNewBaseline(
+          _alphaSnapshot!, _betaSnapshot!, staging);
+      
+      statusManager.addEvent(SyncOperation.detectChanges, '同步完成', isComplete: true);
+    } catch (e, s) {
+      statusManager.addEvent(SyncOperation.detectChanges, '同步失败: $e', isComplete: true);
+      Error.throwWithStackTrace(e, s);
+    }
+  }
+
+  Future<StagingData> _stage(List<Change> alphaToBeta, List<Change> betaToAlpha) async {
+    statusManager.addEvent(SyncOperation.detectChanges, '准备同步数据');
+    
+    try {
+      // 过滤掉.codebisync目录
+      final filteredAlphaToBeta = alphaToBeta
+          .where((c) => !c.path.contains('.codebisync'))
+          .toList();
+      final filteredBetaToAlpha = betaToAlpha
+          .where((c) => !c.path.contains('.codebisync'))
+          .toList();
+
+      final plan = SyncPlan(
+        alphaToBeta: filteredAlphaToBeta,
+        betaToAlpha: filteredBetaToAlpha,
+        conflicts: [],
+      );
+      
+      final staging = stager.prepare(plan);
+      
+      statusManager.addEvent(SyncOperation.detectChanges, '同步数据准备完成', isComplete: true);
+      return staging;
+    } catch (e) {
+      statusManager.addEvent(SyncOperation.detectChanges, '同步数据准备失败: $e', isComplete: true);
+      rethrow;
+    }
+  }
+
+  Future<void> _transportAll(StagingData staging) async {
+    statusManager.addEvent(SyncOperation.detectChanges, '传输同步数据');
+    
+    try {
+      await transport.send(staging);
+      statusManager.addEvent(SyncOperation.detectChanges, '数据传输完成', isComplete: true);
+    } catch (e) {
+      statusManager.addEvent(SyncOperation.detectChanges, '数据传输失败: $e', isComplete: true);
+      rethrow;
+    }
   }
 }

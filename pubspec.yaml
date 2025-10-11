@@ -13,6 +13,7 @@ dependencies:
   path: ^1.8.0
   dartssh2: ^2.8.2
   rxdart: ^0.27.7
+  window_manager: ^0.5.1
 
 dev_dependencies:
   flutter_test:

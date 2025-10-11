@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/rsync_service.dart';
+import '../services/connection_daemon.dart';
 
 class RemoteBrowserDialog extends StatefulWidget {
   final String host;
@@ -73,12 +74,32 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
   bool _compression = false;
   bool _forwardAgent = false;
   final TextEditingController _searchCtrl = TextEditingController();
+  int _retryCount = 0;
+  static const int _maxRetries = 3;
+  final ConnectionDaemon _daemon = ConnectionDaemon();
 
   @override
   void initState() {
     super.initState();
     _cwd = widget.initialPath.isNotEmpty ? widget.initialPath : '/';
     _connectAndList();
+    
+    // Register connection with daemon for stability
+    _daemon.registerConnection(
+      host: widget.host,
+      username: widget.username,
+      port: widget.port,
+      privateKeyPath: widget.privateKeyPath,
+      compression: _compression,
+      forwardAgent: _forwardAgent,
+    );
+  }
+
+  @override
+  void dispose() {
+    // Unregister connection when dialog is closed
+    _daemon.unregisterConnection(widget.host, widget.username, widget.port);
+    super.dispose();
   }
 
   Future<void> _connectAndList() async {
@@ -106,17 +127,31 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
       await _list(_cwd);
     } catch (e) {
       if (!mounted) return;
-      setState(() { _error = '连接失败: $e'; _entries = const []; });
-    } finally {
-      if (mounted) {
-        setState(() { _loading = false; });
+      
+      // Implement retry mechanism
+      if (_retryCount < _maxRetries) {
+        _retryCount++;
+        setState(() { 
+          _error = '连接失败: $e (第 $_retryCount 次重试)'; 
+          _loading = true;
+        });
+        
+        // Wait a bit before retrying
+        await Future.delayed(Duration(seconds: 2));
+        await _connectAndList();
+      } else {
+        setState(() { 
+          _error = '连接失败: $e\n请检查网络连接和SSH配置，然后点击"重试"按钮重新连接'; 
+          _entries = const []; 
+          _loading = false;
+        });
       }
     }
   }
 
   Future<void> _list(String path) async {
     if (!mounted) return;
-    setState(() { _loading = true; _error = null; });
+    setState(() { _loading = true; _error = null; _retryCount = 0; }); // Reset retry count on new list operation
     try {
       final items = await RsyncService.list(
         host: widget.host,
@@ -133,12 +168,35 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
       setState(() { _cwd = path; _entries = items; });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _error = '读取目录失败: $e'; _entries = const []; });
+      
+      // Implement retry mechanism for list operation
+      if (_retryCount < _maxRetries) {
+        _retryCount++;
+        setState(() { 
+          _error = '读取目录失败: $e (第 $_retryCount 次重试)'; 
+          _loading = true;
+        });
+        
+        // Wait a bit before retrying
+        await Future.delayed(Duration(seconds: 2));
+        await _list(path);
+      } else {
+        setState(() { 
+          _error = '读取目录失败: $e\n请检查网络连接和SSH配置，然后点击"重试"按钮重新连接'; 
+          _entries = const []; 
+          _loading = false;
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && _loading) {
         setState(() { _loading = false; });
       }
     }
+  }
+
+  void _retryConnection() {
+    _retryCount = 0; // Reset retry count
+    _connectAndList();
   }
 
   void _pick() {
@@ -196,7 +254,21 @@ class _RemoteBrowserDialogState extends State<RemoteBrowserDialog> {
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : _error != null
-                  ? Center(child: Text(_error!))
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Text(_error!, textAlign: TextAlign.center),
+                          ),
+                          ElevatedButton(
+                            onPressed: _retryConnection,
+                            child: const Text('重试连接'),
+                          ),
+                        ],
+                      ),
+                    )
                   : ListView.builder(
                       itemCount: _filteredEntries.length + (_cwd != '/' ? 1 : 0),
                       itemBuilder: (context, index) {

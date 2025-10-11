@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 class RsyncEntry {
   final String name;
@@ -111,5 +112,64 @@ class RsyncService {
   static String _quotePath(String path) {
     final escaped = path.replaceAll('"', '\\"');
     return '"$escaped"';
+  }
+  
+  // 添加sync方法以支持pull和push操作
+  Future<void> sync({
+    required String source,
+    required String destination,
+    int port = 22,
+    String? identityFile,
+    bool reverse = false,
+    Duration timeout = const Duration(minutes: 5),
+    List<String> excludes = const [
+      '.git',
+      '.venv',
+      'node_modules',
+      '__pycache__',
+      '*.log',
+      '.DS_Store',
+      'models',
+      'results'
+    ], // 默认排除规则
+  }) async {
+    final sshArgs = <String>[
+      'ssh',
+      '-p', port.toString(),
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'UserKnownHostsFile=/dev/null',
+      '-o', 'BatchMode=yes',
+      if (identityFile != null && identityFile.isNotEmpty) ...['-i', identityFile],
+    ];
+
+    final args = <String>[
+      '-avz', // archive, verbose, compress
+      '--delete', // delete extraneous files from destination
+      '-e', sshArgs.join(' '),
+    ];
+    
+    // 添加排除规则
+    for (final exclude in excludes) {
+      args.add('--exclude');
+      args.add(exclude);
+    }
+    
+    args.add(source);
+    args.add(destination);
+
+    final process = await Process.start('rsync', args);
+    final outBuf = StringBuffer();
+    final errBuf = StringBuffer();
+    process.stdout.transform(const SystemEncoding().decoder).listen(outBuf.write);
+    process.stderr.transform(const SystemEncoding().decoder).listen(errBuf.write);
+    
+    final exit = await process.exitCode.timeout(timeout, onTimeout: () {
+      process.kill(ProcessSignal.sigkill);
+      throw TimeoutException('rsync操作超时', timeout);
+    });
+    
+    if (exit != 0) {
+      throw ProcessException('rsync', args, errBuf.toString().isEmpty ? outBuf.toString() : errBuf.toString(), exit);
+    }
   }
 }

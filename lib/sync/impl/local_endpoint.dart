@@ -7,13 +7,17 @@ import '../stager.dart';
 import '../differ.dart';
 import '../snapshot.dart';
 import '../util.dart';
+import '../differ_models.dart';
+import '../../services/sync_status_manager.dart';
+import '../../services/connection_daemon.dart';
 
 class LocalEndpoint implements IncrementalEndpoint {
   final String root;
+  final SyncStatusManager? statusManager; // 添加状态管理器
   late final String _rootCanonical;
   late final String _rootWithSep;
 
-  LocalEndpoint(this.root) {
+  LocalEndpoint(this.root, {this.statusManager}) {
     final abs = Directory(root).absolute.path;
     _rootCanonical = p.normalize(abs);
     _rootWithSep = _rootCanonical.endsWith(p.separator) ? _rootCanonical : '$_rootCanonical${p.separator}';
@@ -75,7 +79,37 @@ class LocalEndpoint implements IncrementalEndpoint {
 
   @override
   Future<Snapshot> scan() async {
-    return scanDirectory(_rootCanonical);
+    statusManager?.addEvent(SyncOperation.scanFiles, '扫描本地文件系统');
+
+    try {
+      final entries = <String, FileMetadata>{};
+      final dir = Directory(root);
+      if (!await dir.exists()) {
+        throw Exception('Local directory does not exist: $root');
+      }
+
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+        final relPath = p.relative(entity.path, from: root);
+        // 精确过滤.codebisync目录及其所有子内容
+        if (p.split(relPath).contains('.codebisync')) {
+          continue;
+        }
+        
+        final stat = await entity.stat();
+        entries[relPath] = FileMetadata(
+          path: relPath,
+          isDirectory: entity is Directory,
+          size: stat.size,
+          mtime: stat.modified,
+        );
+      }
+
+      statusManager?.addEvent(SyncOperation.scanFiles, '本地文件扫描完成', isComplete: true);
+      return Snapshot(entries);
+    } catch (e) {
+      statusManager?.addEvent(SyncOperation.scanFiles, '本地文件扫描失败', isComplete: true);
+      rethrow;
+    }
   }
 
   @override

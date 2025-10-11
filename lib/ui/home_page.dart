@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../models/sync_entry.dart';
 import '../services/sync_service.dart';
+import '../services/connection_daemon.dart';
 import 'remote_browser.dart';
 import '../services/ssh_config.dart';
+import '../services/sync_status_manager.dart';
 
+// 添加一个映射来跟踪目录同步状态
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -16,6 +20,11 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final SyncService _syncService = SyncService();
   final ScrollController _pageScrollCtrl = ScrollController();
+  final ConnectionDaemon _connectionDaemon = ConnectionDaemon();
+  
+  // 添加用于跟踪目录同步状态的映射
+  final Map<String, String> _directoryStatus = {};
+  late StreamSubscription<List<SyncStatusEvent>> _statusSubscription;
 
   final TextEditingController _localDirCtrl = TextEditingController();
   final TextEditingController _remoteDirCtrl = TextEditingController();
@@ -27,6 +36,7 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _remoteKeyCtrl = TextEditingController();
   final TextEditingController _remoteKeyPassCtrl = TextEditingController();
   final TextEditingController _sshCmdCtrl = TextEditingController();
+  final TextEditingController _excludeRuleCtrl = TextEditingController(); // 添加排除规则输入控制器
 
   String _status = 'Idle';
   bool _loadingLocal = false;
@@ -37,6 +47,65 @@ class _HomePageState extends State<HomePage> {
   String? _localError;
   String? _remoteError;
 
+  @override
+  void initState() {
+    super.initState();
+    // 监听同步状态更新
+    _statusSubscription = _syncService.statusManager.statusStream.listen((events) {
+      // 检查是否有完成的同步操作
+      final syncCompleteEvents = events.where((event) => 
+        event.operation == SyncOperation.detectChanges && event.isComplete
+      );
+      
+      if (syncCompleteEvents.isNotEmpty) {
+        final successEvents = syncCompleteEvents.where((event) => 
+          !event.details.contains('失败') && !event.details.contains('错误')
+        );
+        
+        if (successEvents.isNotEmpty) {
+          // 同步成功
+          _updateDirectoryStatus('✅');
+        } else {
+          // 同步失败
+          _updateDirectoryStatus('❌');
+        }
+      }
+      
+      // 更新状态显示
+      if (events.isNotEmpty) {
+        setState(() {
+          _status = events.first.formattedMessage;
+        });
+      }
+    });
+    
+    // 初始化时检查目录状态
+    _initializeDirectoryStatus();
+  }
+  
+  // 初始化目录状态
+  void _initializeDirectoryStatus() {
+    // 在下一帧更新UI状态
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _updateDirectoryStatus('✅');
+    });
+  }
+
+  @override
+  void dispose() {
+    _statusSubscription.cancel();
+    _localDirCtrl.dispose();
+    _remoteDirCtrl.dispose();
+    _remoteUserCtrl.dispose();
+    _remoteHostCtrl.dispose();
+    _remotePortCtrl.dispose();
+    _remotePassCtrl.dispose();
+    _remoteKeyCtrl.dispose();
+    _remoteKeyPassCtrl.dispose();
+    _sshCmdCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _pickRemoteDir() async {
     final host = _remoteHostCtrl.text.trim();
     final user = _remoteUserCtrl.text.trim();
@@ -46,6 +115,15 @@ class _HomePageState extends State<HomePage> {
       _showSnack('请先填写用户名与主机');
       return;
     }
+    
+    // Register connection with daemon for stability
+    _connectionDaemon.registerConnection(
+      host: host,
+      username: user,
+      port: port,
+      privateKeyPath: _remoteKeyCtrl.text.trim().isEmpty ? null : _remoteKeyCtrl.text.trim(),
+    );
+    
     final picked = await RemoteBrowserDialog.pick(
       context: context,
       host: host,
@@ -64,20 +142,6 @@ class _HomePageState extends State<HomePage> {
       _syncService.updateConfig(remotePath: picked);
       await _loadRemoteEntries();
     }
-  }
-
-  @override
-  void dispose() {
-    _localDirCtrl.dispose();
-    _remoteDirCtrl.dispose();
-    _remoteUserCtrl.dispose();
-    _remoteHostCtrl.dispose();
-    _remotePortCtrl.dispose();
-    _remotePassCtrl.dispose();
-    _remoteKeyCtrl.dispose();
-    _remoteKeyPassCtrl.dispose();
-    _sshCmdCtrl.dispose();
-    super.dispose();
   }
 
   Future<void> _pickLocalDir() async {
@@ -200,6 +264,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _onUp() async {
     setState(() {
       _status = 'Starting up...';
+      // 重置目录状态
+      _updateDirectoryStatus('🕙');
     });
 
     try {
@@ -211,17 +277,33 @@ class _HomePageState extends State<HomePage> {
       );
       await _syncService.up();
       if (!mounted) return;
-      setState(() {
-        _status = 'Sync session started';
-      });
+      
+      // 成功状态将在状态流监听器中更新
+      
       await _loadLocalEntries();
       await _loadRemoteEntries();
     } catch (e) {
       if (!mounted) return;
+      
       setState(() {
         _status = 'Error: $e';
       });
     }
+  }
+  
+  // 添加方法来更新目录状态显示
+  void _updateDirectoryStatus(String statusEmoji) {
+    final localPath = _localDirCtrl.text.trim();
+    if (localPath.isNotEmpty) {
+      setState(() {
+        _directoryStatus[localPath] = statusEmoji;
+      });
+    }
+  }
+  
+  // 获取目录状态显示的辅助方法
+  String _getDirectoryStatus(String path) {
+    return _directoryStatus[path] ?? '✅'; // 默认显示✅而不是otime
   }
 
   Future<void> _onStatus() async {
@@ -258,6 +340,152 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _status = result;
     });
+  }
+
+  Future<void> _onDown() async {
+    setState(() {
+      _status = '正在暂停会话...';
+    });
+
+    try {
+      await _syncService.down();
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '会话已暂停';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '暂停失败: $e';
+      });
+    }
+  }
+
+  Future<void> _onStop() async {
+    setState(() {
+      _status = '正在终止会话...';
+    });
+
+    try {
+      await _syncService.stop();
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '会话已终止';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '终止失败: $e';
+      });
+    }
+  }
+
+  Future<void> _onPull() async {
+    setState(() {
+      _status = '正在从远程拉取...';
+      _updateDirectoryStatus('otime');
+    });
+
+    try {
+      _syncService.updateConfig(
+        localPath: _localDirCtrl.text.trim(),
+        remoteUser: _remoteUserCtrl.text.trim(),
+        remoteHost: _remoteHostCtrl.text.trim(),
+        remotePath: _remoteDirCtrl.text.trim(),
+      );
+      await _syncService.pull();
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '拉取完成';
+      });
+      
+      await _loadLocalEntries();
+      await _loadRemoteEntries();
+    } catch (e) {
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '拉取失败: $e';
+      });
+    }
+  }
+
+  Future<void> _onPush() async {
+    setState(() {
+      _status = '正在向远程推送...';
+      _updateDirectoryStatus('otime');
+    });
+
+    try {
+      _syncService.updateConfig(
+        localPath: _localDirCtrl.text.trim(),
+        remoteUser: _remoteUserCtrl.text.trim(),
+        remoteHost: _remoteHostCtrl.text.trim(),
+        remotePath: _remoteDirCtrl.text.trim(),
+      );
+      await _syncService.push();
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '推送完成';
+      });
+      
+      await _loadLocalEntries();
+      await _loadRemoteEntries();
+    } catch (e) {
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '推送失败: $e';
+      });
+    }
+  }
+
+  Future<void> _onFlush() async {
+    setState(() {
+      _status = '正在刷新...';
+    });
+
+    try {
+      await _syncService.flush();
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '刷新请求已发送';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      
+      setState(() {
+        _status = '刷新失败: $e';
+      });
+    }
+  }
+
+  // 添加排除规则
+  void _addExcludeRule(String rule) {
+    if (rule.trim().isEmpty) return;
+    
+    final newExcludes = List<String>.from(_syncService.config.excludes);
+    if (!newExcludes.contains(rule.trim())) {
+      newExcludes.add(rule.trim());
+      _syncService.updateConfig(excludes: newExcludes);
+      _excludeRuleCtrl.clear();
+      setState(() {});
+    }
+  }
+
+  // 删除排除规则
+  void _removeExcludeRule(String rule) {
+    final newExcludes = List<String>.from(_syncService.config.excludes);
+    newExcludes.remove(rule);
+    _syncService.updateConfig(excludes: newExcludes);
+    setState(() {});
   }
 
   void _showSnack(String message) {
@@ -414,6 +642,31 @@ class _HomePageState extends State<HomePage> {
                         label: const Text('Status'),
                       ),
                       OutlinedButton.icon(
+                        onPressed: _onDown,
+                        icon: const Icon(Icons.pause),
+                        label: const Text('Down (pause)'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _onStop,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Stop (terminate)'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _onPull,
+                        icon: const Icon(Icons.download),
+                        label: const Text('Pull (rsync ←)'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _onPush,
+                        icon: const Icon(Icons.upload),
+                        label: const Text('Push (rsync →)'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _onFlush,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Flush'),
+                      ),
+                      OutlinedButton.icon(
                         onPressed: _onDiagnose,
                         icon: const Icon(Icons.health_and_safety_outlined),
                         label: const Text('诊断同步'),
@@ -436,11 +689,62 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
+                // 添加排除规则管理部分
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '排除规则',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: isWide ? 400 : double.infinity,
+                            child: TextField(
+                              controller: _excludeRuleCtrl,
+                              decoration: const InputDecoration(
+                                labelText: '添加排除规则',
+                                hintText: '例如: *.tmp, build/, .env',
+                                suffixIcon: Icon(Icons.add),
+                              ),
+                              onSubmitted: _addExcludeRule,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                ..._syncService.config.excludes.map((rule) => 
+                                  Chip(
+                                    label: Text(rule),
+                                    deleteIcon: const Icon(Icons.close, size: 18),
+                                    onDeleted: () => _removeExcludeRule(rule),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: useRow
                       ? SizedBox(
-                          height: constraints.maxHeight - 210, child: content)
+                          height: constraints.maxHeight - 300, child: content)
                       : content,
                 ),
                 Padding(
@@ -898,7 +1202,7 @@ class _DirectoryListTile extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            _glyph(entry.status),
+            _glyph(entry.status, entry.modifiedAt, entry.lastSyncAt),
             style: const TextStyle(fontSize: 16),
           ),
         ],
@@ -906,15 +1210,26 @@ class _DirectoryListTile extends StatelessWidget {
     );
   }
 
-  String _glyph(SyncStatus status) {
+  // 根据同步状态和时间返回对应的emoji图标
+  // ✅ 表示已同步，❌ 表示同步失败，🕙 表示等待/处理中
+  String _glyph(SyncStatus status, DateTime? modifiedAt, DateTime? lastSyncAt) {
+    // 如果修改时间和上次同步时间相同，则认为已同步
+    if (modifiedAt != null && lastSyncAt != null && modifiedAt.isAtSameMomentAs(lastSyncAt)) {
+      return '✅'; // 已同步
+    }
+    
     switch (status) {
       case SyncStatus.synced:
-        return '✅';
+        return '✅'; // 同步成功
       case SyncStatus.failed:
-        return '❌';
+        return '❌'; // 同步失败
       case SyncStatus.pending:
       default:
-        return '🕙';
+        return '🕙'; // 等待同步或未知状态
     }
   }
 }
+
+
+
+

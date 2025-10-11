@@ -156,6 +156,39 @@ test_outputs/
 ehthumbs.db
 Thumbs.db
 
+# --------------------------------------------
+# 📚 CI
+# ----------
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+*.g.dart
+*.freezed.dart
+
+# Testing
+coverage/
+.coverage
+*.lcov
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+
+
 # ============================================
 # END OF FILE
 # ============================================

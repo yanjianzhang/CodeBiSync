@@ -2,21 +2,27 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
-import '../differ.dart';
 import '../endpoint.dart';
-import '../snapshot.dart';
 import '../staging_models.dart';
-
+import '../sync_controller.dart';
+import '../differ_models.dart';
+import '../snapshot.dart';
+import '../../services/connection_daemon.dart';
+import '../../services/rsync_service.dart';
 import '../../services/sync_status_manager.dart';
 
 class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   final String host;
   final String user;
   final int port;
-  final String remoteRoot;
+  late final String remoteRoot; // Changed to late final
   final String? identityFile;
   final String localRoot;
+  final String? proxyJump;
+  final bool compression;
+  final bool forwardAgent;
   final SyncStatusManager? statusManager; // 新增状态管理器
+  final List<String> excludes; // 添加排除规则
 
   static const int _maxIncrementalPaths = 2048;
   static final RegExp _rsyncListPattern = RegExp(
@@ -27,25 +33,102 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
 
   late final String _remoteRootCanonical;
   late final String _localRootCanonical;
+  final ConnectionDaemon _connectionDaemon = ConnectionDaemon();
 
   RsyncEndpoint({
     required this.host,
     required this.user,
-    required this.remoteRoot,
-    required this.localRoot,
+    required String remoteRoot,
+    required String localRoot,
     this.port = 22,
     this.identityFile,
+    this.proxyJump,
+    this.compression = false,
+    this.forwardAgent = false,
     this.statusManager,
-  }) {
+    this.excludes = const [
+      '.git',
+      '.venv',
+      'node_modules',
+      '__pycache__',
+      '*.log',
+      '.DS_Store',
+      'models',
+      'results'
+    ], // 默认排除规则
+  }) : localRoot = p.normalize(localRoot) {
+    this.remoteRoot = _normalizeRemote(remoteRoot);
     _remoteRootCanonical = _normalizeRemote(remoteRoot);
     _localRootCanonical = Directory(localRoot).absolute.path;
     Directory(_localRootCanonical).createSync(recursive: true);
+
+    // 注册连接到守护进程以提高稳定性
+    _connectionDaemon.registerConnection(
+      host: host,
+      username: user,
+      port: port,
+      privateKeyPath: identityFile,
+      proxyJump: proxyJump,
+      compression: compression,
+      forwardAgent: forwardAgent,
+    );
   }
 
   @override
   Future<Snapshot> scan() async {
-    final map = await _listSubtree('');
-    return Snapshot(map);
+    statusManager?.addEvent(SyncOperation.scanFiles, '扫描远程文件系统');
+
+    try {
+      final args = [
+        '-e',
+        _sshCommandString(),
+        '${_userAtHost()}:${_quote(remoteRoot)}',
+      ];
+      final res = await Process.run('rsync', ['--list-only', '--recursive', ...args]);
+      if (res.exitCode != 0) {
+        throw Exception('rsync list failed: ${res.stderr}');
+      }
+
+      final entries = <String, FileMetadata>{};
+      final lines = (res.stdout as String).split('\n');
+      for (final line in lines) {
+        final m = _rsyncListPattern.firstMatch(line);
+        if (m != null) {
+          final typeChar = m[1]!;
+          final sizeStr = m[2]!;
+          final dateStr = m[3]!;
+          final timeStr = m[4]!;
+          var name = m[5]!;
+          
+          // 过滤掉.codebisync目录及其内容
+          if (name.contains('.codebisync')) {
+            continue;
+          }
+          
+          final isDir = typeChar == 'd';
+          if (name.endsWith('/')) {
+            name = name.substring(0, name.length - 1);
+          }
+          final size = int.tryParse(sizeStr) ?? 0;
+          final timestamp =
+              DateTime.tryParse('${dateStr.replaceAll('/', '-')}T$timeStr') ??
+                  DateTime.now();
+
+          entries[name] = FileMetadata(
+            path: name,
+            isDirectory: isDir,
+            size: isDir ? 0 : size,
+            mtime: timestamp,
+          );
+        }
+      }
+
+      statusManager?.addEvent(SyncOperation.scanFiles, '远程文件扫描完成', isComplete: true);
+      return Snapshot(entries);
+    } catch (e) {
+      statusManager?.addEvent(SyncOperation.scanFiles, '远程文件扫描失败', isComplete: true);
+      rethrow;
+    }
   }
 
   @override
@@ -157,47 +240,73 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
         case ChangeType.create:
         case ChangeType.modify:
           if (change.metadata?.isDirectory == true) {
+            statusManager?.addEvent(SyncOperation.createDirectory, rel, filePath: rel);
             await _ssh(['mkdir', '-p', _remotePath(rel)]);
             // 验证目录是否创建成功
             if (!(await verifyRemotePathExists(rel, isDirectory: true))) {
+              statusManager?.addEvent(SyncOperation.createDirectory, '创建失败: $rel',
+                  isComplete: true, filePath: rel);
               throw Exception('Failed to create remote directory: $rel');
             }
+            statusManager?.addEvent(SyncOperation.createDirectory, rel,
+                isComplete: true, filePath: rel);
           } else {
+            statusManager?.addEvent(SyncOperation.uploadFile, rel, filePath: rel);
             await _ensureRemoteDir(rel);
             // 使用rsync传输文件
             await rsyncFile(rel);
             // 验证文件是否传输成功
             if (!(await verifyRemotePathExists(rel, isDirectory: false))) {
+              statusManager?.addEvent(SyncOperation.uploadFile, '传输失败: $rel',
+                  isComplete: true, filePath: rel);
               throw Exception('Failed to sync file: $rel');
             }
+            statusManager?.addEvent(SyncOperation.uploadFile, rel,
+                isComplete: true, filePath: rel);
           }
           break;
         case ChangeType.delete:
+          statusManager?.addEvent(SyncOperation.deletePath, rel, filePath: rel);
           await _ssh(['rm', '-rf', _remotePath(rel)]);
           // 验证文件是否删除成功
           if (await verifyRemotePathExists(rel, isDirectory: null)) {
+            statusManager?.addEvent(SyncOperation.deletePath, '删除失败: $rel',
+                isComplete: true, filePath: rel);
             throw Exception('Failed to delete remote path: $rel');
           }
+          statusManager?.addEvent(SyncOperation.deletePath, rel,
+              isComplete: true, filePath: rel);
           break;
         case ChangeType.rename:
           final old = change.oldPath;
           if (old != null && old.isNotEmpty) {
+            statusManager?.addEvent(SyncOperation.renamePath, '$old -> $rel', filePath: rel);
             final oldNorm = _normalizeRemoteRelative(old);
             await _ssh(['mkdir', '-p', _remotePath(_posix.dirname(rel))]);
             await _ssh(['mv', _remotePath(oldNorm), _remotePath(rel)]);
             // 验证重命名是否成功
             if (!(await verifyRemotePathExists(rel, isDirectory: null)) ||
                 await verifyRemotePathExists(oldNorm, isDirectory: null)) {
+              statusManager?.addEvent(
+                  SyncOperation.renamePath, '重命名失败: $old -> $rel',
+                  isComplete: true, filePath: rel);
               throw Exception(
                   'Failed to rename remote path from $oldNorm to $rel');
             }
+            statusManager?.addEvent(SyncOperation.renamePath, '$old -> $rel',
+                isComplete: true, filePath: rel);
           } else {
+            statusManager?.addEvent(SyncOperation.uploadFile, rel, filePath: rel);
             await _ensureRemoteDir(rel);
             await rsyncFile(rel);
             // 验证文件是否传输成功
             if (!(await verifyRemotePathExists(rel, isDirectory: false))) {
+              statusManager?.addEvent(SyncOperation.uploadFile, '传输失败: $rel',
+                  isComplete: true, filePath: rel);
               throw Exception('Failed to sync file: $rel');
             }
+            statusManager?.addEvent(SyncOperation.uploadFile, rel,
+                isComplete: true, filePath: rel);
           }
           break;
         case ChangeType.metadataChange:
@@ -256,7 +365,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
 
   // 增强的rsync文件传输方法
   Future<void> rsyncFile(String relPath) async {
-    statusManager?.addEvent(SyncOperation.uploadFile, relPath);
+    statusManager?.addEvent(SyncOperation.uploadFile, relPath, filePath: relPath);
 
     try {
       final src = _joinLocal(_localRootCanonical, relPath);
@@ -296,9 +405,11 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
 
       // 上传完成
       statusManager?.addEvent(SyncOperation.uploadFile, relPath,
-          isComplete: true);
+          isComplete: true, filePath: relPath);
     } catch (e) {
-      // 可以在这里添加失败状态记录
+      // 添加失败状态记录
+      statusManager?.addEvent(SyncOperation.uploadFile, '传输失败: $relPath',
+          isComplete: true, filePath: relPath);
       rethrow;
     }
   }
@@ -306,7 +417,7 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
   // 修改pull方法以记录下载状态
   @override
   Future<void> pull(String relPath) async {
-    statusManager?.addEvent(SyncOperation.downloadFile, relPath);
+    statusManager?.addEvent(SyncOperation.downloadFile, relPath, filePath: relPath);
 
     try {
       final rel = _normalizeRemoteRelative(relPath);
@@ -330,9 +441,11 @@ class RsyncEndpoint implements RemoteIncrementalEndpoint, PullableEndpoint {
 
       // 下载完成
       statusManager?.addEvent(SyncOperation.downloadFile, relPath,
-          isComplete: true);
+          isComplete: true, filePath: relPath);
     } catch (e) {
-      // 可以在这里添加失败状态记录
+      // 添加失败状态记录
+      statusManager?.addEvent(SyncOperation.downloadFile, '下载失败: $relPath',
+          isComplete: true, filePath: relPath);
       rethrow;
     }
   }

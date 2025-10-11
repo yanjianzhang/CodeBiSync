@@ -50,6 +50,12 @@ class SimpleDiffer implements Differ {
         final aChanged = bas == null || a.mtime.isAfter(bas.mtime) || a.size != bas.size;
         final bChanged = bas == null || b.mtime.isAfter(bas.mtime) || b.size != bas.size;
 
+        // 如果两边都没有改变，则认为是同步的，不需要处理
+        if (!aChanged && !bChanged) {
+          // 本地和远程文件的修改时间相同，认为已同步
+          continue;
+        }
+
         if (aChanged && !bChanged) {
           alphaToBeta.add(Change(type: ChangeType.modify, path: path, metadata: a));
         } else if (!aChanged && bChanged) {
@@ -62,6 +68,9 @@ class SimpleDiffer implements Differ {
             alphaToBeta.add(Change(type: ChangeType.modify, path: path, metadata: a));
           } else if (b.mtime.isAfter(a.mtime)) {
             betaToAlpha.add(Change(type: ChangeType.modify, path: path, metadata: b));
+          } else {
+            // 如果修改时间完全相同，则认为已同步
+            continue;
           }
         }
       }

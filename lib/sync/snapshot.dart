@@ -12,6 +12,22 @@ class FileMetadata {
     required this.mtime,
     this.checksum,
   });
+
+  FileMetadata copyWith({
+    String? path,
+    bool? isDirectory,
+    int? size,
+    DateTime? mtime,
+    String? checksum,
+  }) {
+    return FileMetadata(
+      path: path ?? this.path,
+      isDirectory: isDirectory ?? this.isDirectory,
+      size: size ?? this.size,
+      mtime: mtime ?? this.mtime,
+      checksum: checksum ?? this.checksum,
+    );
+  }
 }
 
 class Snapshot {
